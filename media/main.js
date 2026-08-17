@@ -16,9 +16,16 @@
   const seek = document.getElementById('seek');
   const volume = document.getElementById('volume');
   const timeLabel = document.getElementById('time');
+  const qualityButton = document.getElementById('quality');
+  const qualityMenu = document.getElementById('quality-menu');
+  const sidebarButton = document.getElementById('toggle-sidebar');
+  const channelBar = document.getElementById('channel-bar');
+  const channelName = document.getElementById('channel-name');
+  const filtersEl = document.getElementById('filters');
+  const moreButton = document.getElementById('more');
 
   const state = Object.assign(
-    { volume: 1, muted: false, sidebarWidth: 320, sidebarHeight: 200 },
+    { volume: 1, muted: false, sidebarWidth: 320, sidebarHeight: 200, sidebarHidden: false },
     vscode.getState()
   );
 
@@ -272,6 +279,8 @@
     video.load();
     audio.clear();
     duration = 0;
+    qualities = [];
+    renderQuality(0);
     renderTime();
     vscode.postMessage({ type: 'play', id: id });
   }
@@ -282,6 +291,8 @@
     duration = message.duration || 0;
     audio.clear();
     audio.start();
+    qualities = message.qualities || [];
+    renderQuality(message.quality);
     video.src = message.video;
     video.play().catch(() => {});
     seek.value = '0';
@@ -441,11 +452,17 @@
     save();
   });
 
+  // VS Code's webview iframe is usually denied the Fullscreen API, in which case the extension
+  // host is asked to fill the screen with the workbench instead — same effect, different mechanism.
   document.getElementById('fullscreen').addEventListener('click', () => {
+    if (!document.fullscreenEnabled) {
+      vscode.postMessage({ type: 'fullscreen' });
+      return;
+    }
     if (document.fullscreenElement) {
       document.exitFullscreen();
     } else {
-      playerPane.requestFullscreen().catch(() => setStatus('Fullscreen is unavailable here.'));
+      playerPane.requestFullscreen().catch(() => vscode.postMessage({ type: 'fullscreen' }));
     }
   });
 
@@ -453,10 +470,80 @@
     vscode.postMessage({ type: 'maximize' });
   });
 
+  // --- quality ---
+
+  // Every height the current video offers, tallest first; empty until something is playing.
+  let qualities = [];
+
+  function renderQuality(height) {
+    qualityButton.disabled = qualities.length === 0;
+    const current = qualities.find((item) => item.height === height);
+    qualityButton.textContent = current ? current.label : '—';
+
+    qualityMenu.replaceChildren();
+    for (const item of qualities) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = item.height === height ? 'active' : '';
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = item.label;
+      const codec = document.createElement('span');
+      codec.className = 'codec';
+      codec.textContent = item.codec;
+      row.append(label, codec);
+      row.addEventListener('click', () => {
+        closeQualityMenu();
+        vscode.postMessage({ type: 'quality', height: item.height });
+      });
+      qualityMenu.appendChild(row);
+    }
+  }
+
+  function closeQualityMenu() {
+    qualityMenu.classList.add('hidden');
+  }
+
+  qualityButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    qualityMenu.classList.toggle('hidden');
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!qualityMenu.contains(event.target)) {
+      closeQualityMenu();
+    }
+  });
+
+  // --- sidebar visibility ---
+
+  function renderSidebar() {
+    sidebar.classList.toggle('hidden', state.sidebarHidden);
+    splitter.classList.toggle('hidden', state.sidebarHidden);
+    sidebarButton.classList.toggle('active', !state.sidebarHidden);
+    sidebarButton.title = state.sidebarHidden ? 'Show search' : 'Hide search';
+  }
+
+  sidebarButton.addEventListener('click', () => {
+    state.sidebarHidden = !state.sidebarHidden;
+    renderSidebar();
+    save();
+    if (!state.sidebarHidden) {
+      input.focus();
+    }
+  });
+
   // --- results ---
 
-  function renderResults(results) {
-    resultsEl.replaceChildren();
+  // The sidebar shows either search results or one channel's videos. The search list is kept so
+  // stepping back out of a channel does not have to run the query again.
+  let searchResults = [];
+  let channel = null;
+
+  function renderResults(results, append) {
+    if (!append) {
+      resultsEl.replaceChildren();
+    }
     for (const item of results) {
       const card = document.createElement('button');
       card.className = 'card';
@@ -485,7 +572,28 @@
       title.textContent = item.title;
       const sub = document.createElement('div');
       sub.className = 'sub';
-      sub.textContent = [item.channel, item.views, item.published].filter(Boolean).join(' · ');
+      if (item.channelId) {
+        const link = document.createElement('span');
+        link.className = 'channel-link';
+        link.textContent = item.channel;
+        link.title = `Open ${item.channel}`;
+        link.addEventListener('click', (event) => {
+          // The card itself plays the video; opening the channel must not do both.
+          event.stopPropagation();
+          openChannel(item.channelId, '');
+        });
+        sub.appendChild(link);
+        const rest = [item.views, item.published].filter(Boolean).join(' · ');
+        if (rest) {
+          sub.appendChild(document.createTextNode(` · ${rest}`));
+        }
+      } else {
+        // Inside a channel every row has the same owner, so naming it on each card is noise.
+        const fields = channel
+          ? [item.views, item.published]
+          : [item.channel, item.views, item.published];
+        sub.textContent = fields.filter(Boolean).join(' · ');
+      }
       meta.append(title, sub);
 
       card.append(thumbWrap, meta);
@@ -494,14 +602,69 @@
     }
   }
 
+  // --- channel view ---
+
+  function showSearch() {
+    channel = null;
+    channelBar.classList.add('hidden');
+    filtersEl.classList.add('hidden');
+    moreButton.classList.add('hidden');
+    input.placeholder = 'Search or paste a link…';
+    renderResults(searchResults);
+    setStatus(searchResults.length ? '' : 'No results.');
+  }
+
+  function openChannel(id, filter) {
+    channel = { id: id, filter: filter || '' };
+    setStatus('Loading channel…');
+    vscode.postMessage({ type: 'channel', id: id, filter: filter });
+  }
+
+  function showChannel(message) {
+    channel = { id: channel ? channel.id : '', filter: message.filter };
+    channelBar.classList.remove('hidden');
+    channelName.textContent = message.channel;
+    input.placeholder = `Search in ${message.channel}…`;
+    renderFilters(message.filters, message.filter);
+    renderResults(message.videos, message.append);
+    moreButton.classList.toggle('hidden', !message.hasMore);
+    moreButton.disabled = false;
+    setStatus(message.videos.length || message.append ? '' : 'No videos here.');
+  }
+
+  function renderFilters(filters, active) {
+    filtersEl.replaceChildren();
+    // A channel search answers with no filters at all; it is ranked by relevance instead.
+    filtersEl.classList.toggle('hidden', !filters || filters.length < 2);
+    for (const name of filters || []) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = name;
+      button.className = name === active ? 'active' : '';
+      button.addEventListener('click', () => openChannel(channel.id, name));
+      filtersEl.appendChild(button);
+    }
+  }
+
+  document.getElementById('channel-back').addEventListener('click', showSearch);
+
+  moreButton.addEventListener('click', () => {
+    moreButton.disabled = true;
+    vscode.postMessage({ type: 'channel-more' });
+  });
+
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     const query = input.value.trim();
     if (!query) {
       return;
     }
-    setStatus('Searching…');
-    vscode.postMessage({ type: 'search', query: query });
+    setStatus(channel ? 'Searching channel…' : 'Searching…');
+    vscode.postMessage({
+      type: 'search',
+      query: query,
+      channelId: channel ? channel.id : undefined
+    });
   });
 
   window.addEventListener('message', async function (event) {
@@ -511,8 +674,10 @@
     }
 
     if (message.type === 'results') {
-      setStatus(message.results.length ? '' : 'No results.');
-      renderResults(message.results);
+      searchResults = message.results;
+      showSearch();
+    } else if (message.type === 'channel') {
+      showChannel(message);
     } else if (message.type === 'play') {
       play(message);
     } else if (message.type === 'audio-head') {
@@ -532,11 +697,18 @@
         audio.flush();
       }
     } else if (message.type === 'video-url') {
+      // Reloading the picture always restarts its buffer; the sound is a separate stream and keeps
+      // going, so a paused player must stay paused rather than being nudged back into playing.
       const at = video.currentTime;
+      const wasPlaying = !video.paused;
       video.src = message.video;
       video.currentTime = at;
-      video.play().catch(() => {});
+      if (wasPlaying) {
+        video.play().catch(() => {});
+      }
+      renderQuality(message.quality);
     } else if (message.type === 'error') {
+      moreButton.disabled = false;
       setStatus(message.message);
     }
   });
@@ -560,6 +732,8 @@
 
   stacked.addEventListener('change', applySplit);
   applySplit();
+  renderSidebar();
+  renderQuality(0);
   renderVolume();
   renderPlayState();
   renderTime();

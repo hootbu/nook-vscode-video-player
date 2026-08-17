@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AudioFeed, packPackets } from './audio';
-import { StreamInfo, StreamResolver } from './stream';
-import { parseVideoId, search } from './youtube';
+import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver } from './stream';
+import { ChannelBrowser, ChannelPage, parseVideoId, search } from './youtube';
 
 const VIEW_ID = 'playerPanel.view';
 /** How far behind a seek target to start reading, so the covering cluster is not missed. */
@@ -28,9 +28,12 @@ export function deactivate() {}
  */
 class PlayerViewProvider implements vscode.WebviewViewProvider {
   private readonly resolver = new StreamResolver();
+  private readonly channels = new ChannelBrowser();
   private session?: Session;
   /** Stamps each feed so the webview can tell a superseded one's packets from the current ones. */
   private generation = 0;
+  /** Ceiling the viewer picked; kept across videos, since a taller one is not always offered. */
+  private maxHeight = DEFAULT_HEIGHT;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -47,7 +50,13 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
 
     view.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'search') {
-        await this.handleSearch(view.webview, message.query);
+        await this.handleSearch(view.webview, message.query, message.channelId);
+      } else if (message.type === 'channel') {
+        await this.handleChannel(view.webview, () =>
+          this.channels.open(message.id, message.filter)
+        );
+      } else if (message.type === 'channel-more') {
+        await this.handleChannel(view.webview, () => this.channels.more(), true);
       } else if (message.type === 'play') {
         await this.handlePlay(view.webview, message.id);
       } else if (message.type === 'progress') {
@@ -56,20 +65,32 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         await this.handleSeek(view.webview, message.time);
       } else if (message.type === 'stop') {
         this.session?.feed?.dispose();
+      } else if (message.type === 'quality') {
+        this.handleQuality(view.webview, message.height);
       } else if (message.type === 'openExternal') {
         vscode.env.openExternal(vscode.Uri.parse(`https://www.youtube.com/watch?v=${message.id}`));
       } else if (message.type === 'maximize') {
         vscode.commands.executeCommand('workbench.action.toggleMaximizedPanel');
+      } else if (message.type === 'fullscreen') {
+        // Fallback for when the webview is denied the Fullscreen API: filling the window and then
+        // the screen is as close as the workbench gets to the same thing.
+        await vscode.commands.executeCommand('workbench.action.toggleMaximizedPanel');
+        await vscode.commands.executeCommand('workbench.action.toggleFullScreen');
       }
     });
 
     view.onDidDispose(() => this.session?.feed?.dispose());
   }
 
-  private async handleSearch(webview: vscode.Webview, query: string) {
+  /** `channelId` narrows the query to one channel — the sidebar is showing it. */
+  private async handleSearch(webview: vscode.Webview, query: string, channelId?: string) {
     const directId = parseVideoId(query);
     if (directId) {
       await this.handlePlay(webview, directId);
+      return;
+    }
+    if (channelId) {
+      await this.handleChannel(webview, () => this.channels.search(channelId, query));
       return;
     }
 
@@ -86,23 +107,53 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** `append` distinguishes another page of the same list from a fresh one. */
+  private async handleChannel(
+    webview: vscode.Webview,
+    load: () => Promise<ChannelPage>,
+    append = false
+  ) {
+    try {
+      webview.postMessage({ type: 'channel', append, ...(await load()) });
+    } catch (error) {
+      webview.postMessage({ type: 'error', message: (error as Error).message });
+    }
+  }
+
   private async handlePlay(webview: vscode.Webview, id: string) {
     this.session?.feed?.dispose();
     try {
       const info = await this.resolver.resolve(id);
       const session: Session = { id, info };
       this.session = session;
+      const video = pickQuality(info.videos, this.maxHeight);
       webview.postMessage({
         type: 'play',
         id,
         title: info.title,
         duration: info.duration,
-        video: info.videoUrl
+        video: video.url,
+        quality: video.height,
+        qualities: info.videos.map(({ height, label, codec }) => ({ height, label, codec }))
       });
       session.feed = this.startFeed(webview, session, {});
     } catch (error) {
       webview.postMessage({ type: 'error', message: (error as Error).message });
     }
+  }
+
+  /**
+   * Swaps the picture for another track of the same video. Sound is untouched: it rides a separate
+   * stream, so the webview only re-buffers the video and re-pins the audio it already holds.
+   */
+  private handleQuality(webview: vscode.Webview, height: number) {
+    this.maxHeight = height;
+    const session = this.session;
+    if (!session) {
+      return;
+    }
+    const video = pickQuality(session.info.videos, height);
+    webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
   }
 
   /**
@@ -138,7 +189,8 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       async (renew) => {
         if (renew) {
           session.info = await this.resolver.resolve(session.id);
-          webview.postMessage({ type: 'video-url', video: session.info.videoUrl });
+          const video = pickQuality(session.info.videos, this.maxHeight);
+          webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
         }
         return session.info.audioUrl;
       },
@@ -207,11 +259,20 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         </button>
         <input id="seek" type="range" min="0" max="1000" value="0" title="Position">
         <span id="time">0:00 / 0:00</span>
-        <button id="mute" class="ctl" title="Mute">
-          <svg viewBox="0 0 16 16" class="icon-sound"><path d="M8 2 4.5 5H2v6h2.5L8 14z"/><path d="M10.6 5.4a3.7 3.7 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
-          <svg viewBox="0 0 16 16" class="icon-muted hidden"><path d="M8 2 4.5 5H2v6h2.5L8 14z"/><path d="M10.6 5.9l3.4 3.4m0-3.4l-3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        <div id="volume-wrap">
+          <button id="mute" class="ctl" title="Mute">
+            <svg viewBox="0 0 16 16" class="icon-sound"><path d="M8 2 4.5 5H2v6h2.5L8 14z"/><path d="M10.6 5.4a3.7 3.7 0 0 1 0 5.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            <svg viewBox="0 0 16 16" class="icon-muted hidden"><path d="M8 2 4.5 5H2v6h2.5L8 14z"/><path d="M10.6 5.9l3.4 3.4m0-3.4l-3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+          </button>
+          <input id="volume" type="range" min="0" max="100" value="100" title="Volume">
+        </div>
+        <div class="menu-wrap">
+          <button id="quality" class="ctl text" title="Quality" disabled>—</button>
+          <div id="quality-menu" class="menu hidden"></div>
+        </div>
+        <button id="toggle-sidebar" class="ctl" title="Hide search">
+          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
-        <input id="volume" type="range" min="0" max="100" value="100" title="Volume">
         <button id="fullscreen" class="ctl" title="Fullscreen">
           <svg viewBox="0 0 16 16"><path d="M2 6V2h4v1.5H3.5V6zm8-4h4v4h-1.5V3.5H10zM2 10h1.5v2.5H6V14H2zm10.5 0H14v4h-4v-1.5h2.5z"/></svg>
         </button>
@@ -225,8 +286,16 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       <form id="search-form">
         <input id="search-input" type="text" placeholder="Search or paste a link…" autocomplete="off" spellcheck="false">
       </form>
+      <div id="channel-bar" class="hidden">
+        <button id="channel-back" title="Back to search results">
+          <svg viewBox="0 0 16 16"><path d="M9.8 3.2 5 8l4.8 4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span id="channel-name"></span>
+      </div>
+      <div id="filters" class="hidden"></div>
       <div id="status"></div>
       <div id="results"></div>
+      <button id="more" class="hidden">Load more</button>
     </aside>
   </div>
   <script nonce="${nonce}" src="${asset('opus-decoder.min.js')}"></script>

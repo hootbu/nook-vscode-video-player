@@ -68,8 +68,30 @@ body {
   min-width: 30px;
 }
 
+/* The slider stays out of the way until the speaker is hovered or keyboard-focused, then it
+   widens in place rather than floating over the picture. */
+
+#volume-wrap {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
 #volume {
-  flex: 0 0 68px;
+  flex: 0 0 auto;
+  width: 0;
+  opacity: 0;
+  transition:
+    width 120ms ease,
+    opacity 120ms ease,
+    margin-left 120ms ease;
+}
+
+#volume-wrap:hover #volume,
+#volume-wrap:focus-within #volume {
+  width: 68px;
+  margin-left: 4px;
+  opacity: 1;
 }
 
 #time {
@@ -84,8 +106,9 @@ body {
     display: none;
   }
 
-  #volume {
-    flex-basis: 40px;
+  #volume-wrap:hover #volume,
+  #volume-wrap:focus-within #volume {
+    width: 44px;
   }
 }
 
@@ -117,6 +140,83 @@ body {
   width: 14px;
   height: 14px;
   fill: currentColor;
+}
+
+.ctl:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ctl.active {
+  background: var(--vscode-inputOption-activeBackground, rgba(0, 120, 212, 0.4));
+  color: var(--vscode-inputOption-activeForeground, inherit);
+}
+
+.ctl.text {
+  width: auto;
+  min-width: 30px;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- quality menu --- */
+
+.menu-wrap {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 5;
+  min-width: 96px;
+  padding: 3px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+  color: var(--vscode-menu-foreground, inherit);
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border, #454545));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.menu button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 3px 6px;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
+
+.menu button.active .label::before {
+  content: '✓ ';
+}
+
+.menu button:not(.active) .label {
+  padding-left: 12px;
+}
+
+.menu .codec {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
 }
 
 /* --- splitter --- */
@@ -172,6 +272,104 @@ body {
 #search-input:focus {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
+}
+
+/* --- channel view --- */
+
+#channel-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0 2px;
+  min-width: 0;
+}
+
+#channel-back {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+#channel-back:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+#channel-back svg {
+  width: 13px;
+  height: 13px;
+}
+
+#channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+#filters {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0 2px;
+}
+
+#filters button {
+  padding: 2px 8px;
+  color: inherit;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.25));
+  border: 0;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+#filters button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+#filters button.active {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0078d4);
+}
+
+#more {
+  flex: 0 0 auto;
+  margin-top: 4px;
+  padding: 4px;
+  color: var(--vscode-button-secondaryForeground, inherit);
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+  border: 0;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+#more:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+#more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.channel-link {
+  cursor: pointer;
+}
+
+.channel-link:hover {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
 }
 
 #status {
