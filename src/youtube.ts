@@ -181,8 +181,11 @@ interface VideoList {
 /**
  * Channel listings arrive as `LockupView` — YouTube's newer, flatter card — while a channel search
  * still answers with the classic `Video` node. Both are flattened to the same shape here.
+ *
+ * Exported so the tests can hold it to a fixture: this is the layer YouTube reshapes without
+ * warning, and a silent change here empties the sidebar rather than raising anything.
  */
-function fromNode(node: any, channel: string): VideoResult | undefined {
+export function fromNode(node: any, channel: string): VideoResult | undefined {
   if (node?.type === 'LockupView') {
     return node.content_type === 'VIDEO' ? fromLockup(node, channel) : undefined;
   }
