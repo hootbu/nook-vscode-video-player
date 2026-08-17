@@ -152,16 +152,10 @@ body {
   color: var(--vscode-inputOption-activeForeground, inherit);
 }
 
-.ctl.text {
-  width: auto;
-  min-width: 30px;
-  padding: 0 5px;
-  font-family: inherit;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- quality menu --- */
+/* --- quality menu ---
+   Opens on hover, like the volume slider beside it. It stands 4px off the bar, and an invisible
+   strip spans that gap so moving the cursor up into the menu never crosses unhovered ground and
+   closes it. Keyboard users reach the same menu through :focus-within. */
 
 .menu-wrap {
   position: relative;
@@ -172,15 +166,37 @@ body {
 .menu {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 4px);
+  bottom: 100%;
   z-index: 5;
   min-width: 96px;
   padding: 3px;
+  margin-bottom: 4px;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    visibility 120ms;
   background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
   color: var(--vscode-menu-foreground, inherit);
   border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border, #454545));
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.menu::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
+
+/* An empty menu means nothing is playing, and there is nothing to open. */
+.menu-wrap:hover .menu:not(:empty),
+.menu-wrap:focus-within .menu:not(:empty) {
+  visibility: visible;
+  opacity: 1;
 }
 
 .menu button {
@@ -257,8 +273,15 @@ body {
   min-height: 0;
 }
 
+#search-form {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
 #search-input {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   box-sizing: border-box;
   padding: 5px 8px;
   color: var(--vscode-input-foreground);
@@ -272,6 +295,42 @@ body {
 #search-input:focus {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
+}
+
+/* Once a search has been run its results stand in front of the history, and this is the way back
+   to it — and, with results to return to, the way back out again. */
+
+#show-history {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+#show-history svg {
+  width: 15px;
+  height: 15px;
+}
+
+#show-history:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+#show-history:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+#show-history.active {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0078d4);
 }
 
 /* --- channel view --- */
@@ -339,6 +398,35 @@ body {
 #filters button.active {
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-background, #0078d4);
+}
+
+/* --- history --- */
+
+#history-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 2px 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#history-clear {
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  background: none;
+  border: 0;
+  font-family: inherit;
+  font-size: inherit;
+  text-transform: none;
+  cursor: pointer;
+}
+
+#history-clear:hover {
+  text-decoration: underline;
 }
 
 #more {
@@ -448,6 +536,22 @@ body {
 
 .badge.live {
   background: #cc0000;
+}
+
+/* How far a watched video got, drawn along the bottom of its thumbnail. */
+
+.progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.progress div {
+  height: 100%;
+  background: var(--vscode-progressBar-background, #0078d4);
 }
 
 .meta {

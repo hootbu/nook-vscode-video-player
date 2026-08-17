@@ -19,6 +19,8 @@ export interface VideoOption {
 export interface StreamInfo {
   id: string;
   title: string;
+  /** Channel name, as the watch page shows it. */
+  author: string;
   /** Seconds. */
   duration: number;
   videoUrl: string;
@@ -29,9 +31,18 @@ export interface StreamInfo {
   audioUrl: string;
 }
 
-/** Tallest option at or below the requested height, falling back to the shortest one offered. */
+/**
+ * Tallest option at or below the requested height, with one override: H.264 outranks a taller VP9
+ * or AV1 track. A height only appears in another codec when no H.264 is offered at it, and picking
+ * one leaves the `<video>` element rejecting the source outright — a taller picture is worth
+ * nothing if it cannot be decoded. A video offering no H.264 at all still gets a track; choosing
+ * one of those knowingly is what the menu is for.
+ */
 export function pickQuality(videos: VideoOption[], maxHeight: number): VideoOption {
-  return videos.find((video) => video.height <= maxHeight) ?? videos[videos.length - 1];
+  const allowed = videos.filter((video) => video.height <= maxHeight);
+  return (
+    allowed.find((video) => video.codec === 'H.264') ?? allowed[0] ?? videos[videos.length - 1]
+  );
 }
 
 /**
@@ -72,6 +83,7 @@ export class StreamResolver {
     return {
       id,
       title: info.basic_info.title ?? '',
+      author: info.basic_info.author ?? '',
       duration: audio.approx_duration_ms
         ? audio.approx_duration_ms / 1000
         : (info.basic_info.duration ?? 0),

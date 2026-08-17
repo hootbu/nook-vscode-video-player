@@ -23,6 +23,9 @@
   const channelName = document.getElementById('channel-name');
   const filtersEl = document.getElementById('filters');
   const moreButton = document.getElementById('more');
+  const historyBar = document.getElementById('history-bar');
+  const historyClear = document.getElementById('history-clear');
+  const historyButton = document.getElementById('show-history');
 
   const state = Object.assign(
     { volume: 1, muted: false, sidebarWidth: 320, sidebarHeight: 200, sidebarHidden: false },
@@ -266,12 +269,20 @@
   let duration = 0;
   let scrubbing = false;
   let currentId = '';
+  // Where a half-watched video should pick up. The <video> element cannot be seeked before it
+  // knows its own duration, so the position waits here for its metadata.
+  let pendingResume = 0;
+  /** Fresh URLs to try before a rejected source is reported as a real failure. */
+  const VIDEO_RETRIES = 2;
+  let videoRetries = 0;
   // Which feed the sound currently belongs to; packets from an older one are ignored.
   let generation = -1;
 
   function requestPlay(id) {
     setStatus('Loading…');
     currentId = id;
+    pendingResume = 0;
+    videoRetries = 0;
     // Go quiet immediately: resolving the new streams takes a moment, and the old video should
     // not keep playing underneath it.
     video.pause();
@@ -293,11 +304,12 @@
     audio.start();
     qualities = message.qualities || [];
     renderQuality(message.quality);
+    pendingResume = message.resumeAt || 0;
     video.src = message.video;
     video.play().catch(() => {});
     seek.value = '0';
     renderTime();
-    setStatus('');
+    setStatus(pendingResume ? `Resuming at ${formatTime(pendingResume)}.` : '');
   }
 
   function setStatus(text) {
@@ -358,15 +370,20 @@
   function renderPlayState() {
     playButton.querySelector('.icon-play').classList.toggle('hidden', !video.paused);
     playButton.querySelector('.icon-pause').classList.toggle('hidden', video.paused);
+    // The status bar shows the same state, and it is the only sign of the player left once the
+    // panel is collapsed.
+    vscode.postMessage({ type: 'playstate', playing: !video.paused });
   }
 
-  playButton.addEventListener('click', () => {
+  function togglePlay() {
     if (video.paused) {
       video.play().catch(() => {});
     } else {
       video.pause();
     }
-  });
+  }
+
+  playButton.addEventListener('click', togglePlay);
 
   // The video element is the clock. Sound follows it: it goes quiet whenever the picture is not
   // advancing, and re-pins to it whenever it starts moving again — always replaying from audio
@@ -381,7 +398,28 @@
     renderPlayState();
   });
   video.addEventListener('waiting', () => audio.silence());
-  video.addEventListener('playing', () => audio.restart(video.currentTime));
+  video.addEventListener('playing', () => {
+    audio.restart(video.currentTime);
+    // Picture is moving, so whatever was refused is behind us: a failure hours from now, when the
+    // URL expires on its own, gets its own goes at a fresh one.
+    videoRetries = 0;
+    if (status.textContent.startsWith('Stream refused')) {
+      setStatus('');
+    }
+  });
+  video.addEventListener('loadedmetadata', () => {
+    if (pendingResume) {
+      video.currentTime = pendingResume;
+      pendingResume = 0;
+      // The notice has been read by the time the picture lands; leaving it would sit above the
+      // results until the next search.
+      setTimeout(() => {
+        if (status.textContent.startsWith('Resuming')) {
+          setStatus('');
+        }
+      }, 3000);
+    }
+  });
   video.addEventListener('seeked', () => {
     if (!video.paused) {
       audio.restart(video.currentTime);
@@ -389,6 +427,18 @@
   });
   video.addEventListener('error', () => {
     const failure = video.error;
+
+    // A spent googlevideo URL answers 403 with a text/plain body, which the element cannot tell
+    // from a corrupt file: it reports a format error. So a rejected source is worth one or two
+    // goes at a fresh URL before it is believed. The src attribute is the discriminator —
+    // requestPlay strips it before calling load(), and that rejection is not worth retrying.
+    if (failure && failure.code === 4 && video.getAttribute('src') && videoRetries < VIDEO_RETRIES) {
+      videoRetries++;
+      setStatus('Stream refused — asking for a fresh URL…');
+      vscode.postMessage({ type: 'refresh-video' });
+      return;
+    }
+
     const kind =
       { 1: 'aborted', 2: 'network', 3: 'decode', 4: 'source rejected' }[failure && failure.code] ||
       'unknown';
@@ -478,7 +528,9 @@
   function renderQuality(height) {
     qualityButton.disabled = qualities.length === 0;
     const current = qualities.find((item) => item.height === height);
-    qualityButton.textContent = current ? current.label : '—';
+    // The gear carries no label, so the current choice lives in the tooltip and, once the menu is
+    // open, in the tick beside the active row.
+    qualityButton.title = current ? `Quality — ${current.label}` : 'Quality';
 
     qualityMenu.replaceChildren();
     for (const item of qualities) {
@@ -493,27 +545,14 @@
       codec.textContent = item.codec;
       row.append(label, codec);
       row.addEventListener('click', () => {
-        closeQualityMenu();
+        // Dropping focus closes the menu for a keyboard user, who opened it by tabbing to the gear;
+        // with a pointer, hover keeps it open until the cursor leaves, which is what is wanted.
+        row.blur();
         vscode.postMessage({ type: 'quality', height: item.height });
       });
       qualityMenu.appendChild(row);
     }
   }
-
-  function closeQualityMenu() {
-    qualityMenu.classList.add('hidden');
-  }
-
-  qualityButton.addEventListener('click', (event) => {
-    event.stopPropagation();
-    qualityMenu.classList.toggle('hidden');
-  });
-
-  document.addEventListener('click', (event) => {
-    if (!qualityMenu.contains(event.target)) {
-      closeQualityMenu();
-    }
-  });
 
   // --- sidebar visibility ---
 
@@ -539,6 +578,10 @@
   // stepping back out of a channel does not have to run the query again.
   let searchResults = [];
   let channel = null;
+  let historyItems = [];
+  // Which list is in front. Results and channels are both reached from a search, so this only has
+  // to say whether the history is covering them.
+  let historyOpen = true;
 
   function renderResults(results, append) {
     if (!append) {
@@ -563,6 +606,15 @@
         badgeEl.className = item.live ? 'badge live' : 'badge';
         badgeEl.textContent = badge;
         thumbWrap.appendChild(badgeEl);
+      }
+
+      if (item.progress) {
+        const bar = document.createElement('div');
+        bar.className = 'progress';
+        const fill = document.createElement('div');
+        fill.style.width = `${Math.round(item.progress * 100)}%`;
+        bar.appendChild(fill);
+        thumbWrap.appendChild(bar);
       }
 
       const meta = document.createElement('div');
@@ -604,15 +656,92 @@
 
   // --- channel view ---
 
-  function showSearch() {
+  /** `searched` marks a query that has just come back, so an empty one can say so. */
+  function showSearch(searched) {
+    // Nothing has been searched for yet — or a search came back empty — so the sidebar falls back
+    // to what was watched before rather than standing empty.
+    if (!searchResults.length) {
+      showHistory();
+      if (searched) {
+        setStatus('No results.');
+      }
+      return;
+    }
     channel = null;
+    setHistoryOpen(false);
     channelBar.classList.add('hidden');
     filtersEl.classList.add('hidden');
     moreButton.classList.add('hidden');
+    historyBar.classList.add('hidden');
     input.placeholder = 'Search or paste a link…';
     renderResults(searchResults);
-    setStatus(searchResults.length ? '' : 'No results.');
+    setStatus('');
   }
+
+  function showHistory() {
+    channel = null;
+    setHistoryOpen(true);
+    channelBar.classList.add('hidden');
+    filtersEl.classList.add('hidden');
+    moreButton.classList.add('hidden');
+    historyBar.classList.toggle('hidden', historyItems.length === 0);
+    input.placeholder = 'Search or paste a link…';
+    renderResults(historyItems.map(toCard));
+    setStatus(historyItems.length ? '' : 'Nothing watched yet.');
+  }
+
+  function setHistoryOpen(open) {
+    historyOpen = open;
+    historyButton.classList.toggle('active', open);
+    // With results waiting behind it the button goes both ways, and says which way it is pointing.
+    historyButton.title = open && searchResults.length ? 'Back to results' : 'Recently watched';
+  }
+
+  historyButton.addEventListener('click', () => {
+    if (historyOpen && searchResults.length) {
+      showSearch();
+    } else {
+      showHistory();
+    }
+  });
+
+  /** A watched video wearing the same clothes as a search result, plus how far it got. */
+  function toCard(entry) {
+    return {
+      id: entry.id,
+      title: entry.title,
+      channel: entry.channel,
+      channelId: '',
+      duration: entry.duration ? formatTime(entry.duration) : '',
+      views: '',
+      published: timeAgo(entry.at),
+      // Derived rather than stored: the id is all a thumbnail URL needs.
+      thumbnail: `https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg`,
+      live: false,
+      progress: entry.duration ? Math.min(entry.position / entry.duration, 1) : 0
+    };
+  }
+
+  function timeAgo(at) {
+    const seconds = Math.max(0, (Date.now() - at) / 1000);
+    const scales = [
+      [31536000, 'year'],
+      [2592000, 'month'],
+      [604800, 'week'],
+      [86400, 'day'],
+      [3600, 'hour'],
+      [60, 'minute']
+    ];
+    for (const [size, name] of scales) {
+      const count = Math.floor(seconds / size);
+      if (count >= 1) {
+        return `${count} ${name}${count > 1 ? 's' : ''} ago`;
+      }
+    }
+    return 'just now';
+  }
+
+  historyClear.addEventListener('click', () => vscode.postMessage({ type: 'clear-history' }));
 
   function openChannel(id, filter) {
     channel = { id: id, filter: filter || '' };
@@ -622,6 +751,8 @@
 
   function showChannel(message) {
     channel = { id: channel ? channel.id : '', filter: message.filter };
+    setHistoryOpen(false);
+    historyBar.classList.add('hidden');
     channelBar.classList.remove('hidden');
     channelName.textContent = message.channel;
     input.placeholder = `Search in ${message.channel}…`;
@@ -646,7 +777,7 @@
     }
   }
 
-  document.getElementById('channel-back').addEventListener('click', showSearch);
+  document.getElementById('channel-back').addEventListener('click', () => showSearch());
 
   moreButton.addEventListener('click', () => {
     moreButton.disabled = true;
@@ -675,7 +806,16 @@
 
     if (message.type === 'results') {
       searchResults = message.results;
-      showSearch();
+      showSearch(true);
+    } else if (message.type === 'history') {
+      historyItems = message.items || [];
+      // Only redraw where the history is what is on screen; a fresh watch must not throw away the
+      // search results the viewer is still picking from.
+      if (historyOpen) {
+        showHistory();
+      }
+    } else if (message.type === 'toggle') {
+      togglePlay();
     } else if (message.type === 'channel') {
       showChannel(message);
     } else if (message.type === 'play') {
@@ -737,6 +877,8 @@
   renderVolume();
   renderPlayState();
   renderTime();
+  // Asked for rather than pushed: a message sent while this script was still loading would be lost.
+  vscode.postMessage({ type: 'ready' });
 
   splitter.addEventListener('pointerdown', (event) => {
     event.preventDefault();

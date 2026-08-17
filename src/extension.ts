@@ -1,19 +1,23 @@
 import * as vscode from 'vscode';
 import { AudioFeed, packPackets } from './audio';
+import { History } from './history';
 import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver } from './stream';
 import { ChannelBrowser, ChannelPage, parseVideoId, search } from './youtube';
 
 const VIEW_ID = 'playerPanel.view';
 /** How far behind a seek target to start reading, so the covering cluster is not missed. */
 const BACKTRACK_SECONDS = 20;
+/** Longer titles are cut down for the status bar, which has the rest of the workbench to share. */
+const STATUS_TITLE_LENGTH = 40;
 
 export function activate(context: vscode.ExtensionContext) {
-  const provider = new PlayerViewProvider(context.extensionUri);
+  const provider = new PlayerViewProvider(context.extensionUri, new History(context.globalState));
   context.subscriptions.push(
     { dispose: () => provider.dispose() },
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
       webviewOptions: { retainContextWhenHidden: true }
-    })
+    }),
+    vscode.commands.registerCommand('player.togglePlay', () => provider.togglePlay())
   );
 }
 
@@ -29,19 +33,36 @@ export function deactivate() {}
 class PlayerViewProvider implements vscode.WebviewViewProvider {
   private readonly resolver = new StreamResolver();
   private readonly channels = new ChannelBrowser();
+  // Right-hand side, and a priority high enough to sit among the editor's own items rather than
+  // out at the very edge beside the notification bell.
+  private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  private view?: vscode.WebviewView;
   private session?: Session;
   /** Stamps each feed so the webview can tell a superseded one's packets from the current ones. */
   private generation = 0;
   /** Ceiling the viewer picked; kept across videos, since a taller one is not always offered. */
   private maxHeight = DEFAULT_HEIGHT;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly history: History
+  ) {
+    this.status.command = 'player.togglePlay';
+  }
 
   dispose() {
     this.session?.feed?.dispose();
+    this.history.dispose();
+    this.status.dispose();
+  }
+
+  /** Reaches the player from the palette or the status bar, where there is nothing to click on. */
+  togglePlay() {
+    this.view?.webview.postMessage({ type: 'toggle' });
   }
 
   resolveWebviewView(view: vscode.WebviewView) {
+    this.view = view;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')]
@@ -51,6 +72,13 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'search') {
         await this.handleSearch(view.webview, message.query, message.channelId);
+      } else if (message.type === 'ready') {
+        this.sendHistory(view.webview);
+      } else if (message.type === 'playstate') {
+        this.showStatus(message.playing);
+      } else if (message.type === 'clear-history') {
+        this.history.clear();
+        this.sendHistory(view.webview);
       } else if (message.type === 'channel') {
         await this.handleChannel(view.webview, () =>
           this.channels.open(message.id, message.filter)
@@ -61,10 +89,15 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         await this.handlePlay(view.webview, message.id);
       } else if (message.type === 'progress') {
         this.session?.feed?.advance(message.time);
+        if (this.session) {
+          this.history.position(this.session.id, message.time);
+        }
       } else if (message.type === 'seek') {
         await this.handleSeek(view.webview, message.time);
       } else if (message.type === 'stop') {
         this.session?.feed?.dispose();
+      } else if (message.type === 'refresh-video') {
+        await this.handleRefresh(view.webview);
       } else if (message.type === 'quality') {
         this.handleQuality(view.webview, message.height);
       } else if (message.type === 'openExternal') {
@@ -79,7 +112,29 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    view.onDidDispose(() => this.session?.feed?.dispose());
+    view.onDidDispose(() => {
+      this.view = undefined;
+      this.session?.feed?.dispose();
+      this.status.hide();
+    });
+  }
+
+  private sendHistory(webview: vscode.Webview) {
+    webview.postMessage({ type: 'history', items: this.history.list() });
+  }
+
+  /** The status bar carries the playing video, so it stays visible with the panel collapsed. */
+  private showStatus(playing: boolean) {
+    const title = this.session?.info.title;
+    if (!title) {
+      this.status.hide();
+      return;
+    }
+    const short =
+      title.length > STATUS_TITLE_LENGTH ? `${title.slice(0, STATUS_TITLE_LENGTH - 1)}…` : title;
+    this.status.text = `$(${playing ? 'play' : 'debug-pause'}) ${short}`;
+    this.status.tooltip = `${title}\n${playing ? 'Pause' : 'Play'}`;
+    this.status.show();
   }
 
   /** `channelId` narrows the query to one channel — the sidebar is showing it. */
@@ -124,19 +179,52 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     this.session?.feed?.dispose();
     try {
       const info = await this.resolver.resolve(id);
-      const session: Session = { id, info };
+      const resumeAt = this.history.resumeAt(id);
+      const session: Session = { id, info, resumeAt: resumeAt || undefined };
       this.session = session;
+      this.history.record({
+        id,
+        title: info.title,
+        channel: info.author,
+        duration: info.duration
+      });
+      this.sendHistory(webview);
+
       const video = pickQuality(info.videos, this.maxHeight);
       webview.postMessage({
         type: 'play',
         id,
         title: info.title,
         duration: info.duration,
+        resumeAt,
         video: video.url,
         quality: video.height,
         qualities: info.videos.map(({ height, label, codec }) => ({ height, label, codec }))
       });
       session.feed = this.startFeed(webview, session, {});
+      this.showStatus(true);
+    } catch (error) {
+      this.session = undefined;
+      this.status.hide();
+      webview.postMessage({ type: 'error', message: (error as Error).message });
+    }
+  }
+
+  /**
+   * Mints a fresh URL for the picture. googlevideo answers a spent or over-used URL with a 403
+   * whose body is text/plain, and the `<video>` element cannot tell that from a corrupt file — it
+   * reports a format error and stops. The audio feed already re-resolves on a 403; this is the
+   * same recovery for the other half.
+   */
+  private async handleRefresh(webview: vscode.Webview) {
+    const session = this.session;
+    if (!session) {
+      return;
+    }
+    try {
+      session.info = await this.resolver.resolve(session.id);
+      const video = pickQuality(session.info.videos, this.maxHeight);
+      webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
     } catch (error) {
       webview.postMessage({ type: 'error', message: (error as Error).message });
     }
@@ -197,6 +285,15 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       {
         head: (head) => {
           session.head = head;
+          // OpusHead only exists at the top of the file, so a video being resumed is read from the
+          // start until it turns up — and only then can the feed jump to where it was left off.
+          // By now the track's size is known too, which is what makes that jump possible.
+          if (session.resumeAt !== undefined) {
+            const target = session.resumeAt;
+            session.resumeAt = undefined;
+            void this.handleSeek(webview, target);
+            return;
+          }
           webview.postMessage({
             type: 'audio-head',
             generation,
@@ -267,8 +364,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
           <input id="volume" type="range" min="0" max="100" value="100" title="Volume">
         </div>
         <div class="menu-wrap">
-          <button id="quality" class="ctl text" title="Quality" disabled>—</button>
-          <div id="quality-menu" class="menu hidden"></div>
+          <button id="quality" class="ctl" title="Quality" aria-haspopup="true" disabled>
+            <svg viewBox="0 0 16 16"><path d="M8 5.4A2.6 2.6 0 1 0 8 10.6 2.6 2.6 0 0 0 8 5.4m0 1.5a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2"/><path d="m6.9 1.5h2.2l.3 1.7 1.2.7 1.6-.6 1.1 1.9-1.3 1.1v1.4l1.3 1.1-1.1 1.9-1.6-.6-1.2.7-.3 1.7H6.9l-.3-1.7-1.2-.7-1.6.6-1.1-1.9 1.3-1.1V6.3L2.7 5.2l1.1-1.9 1.6.6 1.2-.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+          </button>
+          <div id="quality-menu" class="menu"></div>
         </div>
         <button id="toggle-sidebar" class="ctl" title="Hide search">
           <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -285,6 +384,9 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     <aside id="sidebar">
       <form id="search-form">
         <input id="search-input" type="text" placeholder="Search or paste a link…" autocomplete="off" spellcheck="false">
+        <button id="show-history" type="button" title="Recently watched">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.4V8l2.6 1.9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </form>
       <div id="channel-bar" class="hidden">
         <button id="channel-back" title="Back to search results">
@@ -293,6 +395,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         <span id="channel-name"></span>
       </div>
       <div id="filters" class="hidden"></div>
+      <div id="history-bar" class="hidden">
+        <span>Recently watched</span>
+        <button id="history-clear" type="button">Clear</button>
+      </div>
       <div id="status"></div>
       <div id="results"></div>
       <button id="more" class="hidden">Load more</button>
@@ -310,6 +416,8 @@ interface Session {
   info: StreamInfo;
   feed?: AudioFeed;
   head?: Buffer;
+  /** Set only until the head arrives and the feed can be moved to where watching left off. */
+  resumeAt?: number;
 }
 
 function createNonce(): string {
