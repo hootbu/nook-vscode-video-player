@@ -1,0 +1,291 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+#stage {
+  display: flex;
+  height: 100%;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+/* --- player --- */
+
+#player-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 120px;
+  min-height: 80px;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#screen {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+
+/* --- controls ---
+   The player carries its own bar: sound does not come from the <video> element at all, so the
+   native controls would show a volume slider that changes nothing. */
+
+#controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 3px 6px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background, #1f1f1f);
+}
+
+#controls input[type='range'] {
+  height: 14px;
+  margin: 0;
+  accent-color: var(--vscode-button-background, #0078d4);
+  cursor: pointer;
+}
+
+#seek {
+  flex: 1 1 auto;
+  min-width: 30px;
+}
+
+#volume {
+  flex: 0 0 68px;
+}
+
+#time {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 420px) {
+  #time {
+    display: none;
+  }
+
+  #volume {
+    flex-basis: 40px;
+  }
+}
+
+.ctl {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.ctl:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.ctl:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.ctl svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* --- splitter --- */
+
+#splitter {
+  flex: 0 0 8px;
+  border-radius: 4px;
+  cursor: col-resize;
+}
+
+#splitter:hover,
+#splitter.dragging {
+  background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder));
+}
+
+#placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editor-background);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* --- sidebar --- */
+
+#sidebar {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+#search-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+#status {
+  padding: 6px 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+#status:empty {
+  display: none;
+}
+
+#results {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* --- result card --- */
+
+.card {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 4px;
+  margin-bottom: 2px;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.card:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.card:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.thumb {
+  position: relative;
+  flex: 0 0 100px;
+  aspect-ratio: 16 / 9;
+  background: var(--vscode-editorWidget-background);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.badge {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.badge.live {
+  background: #cc0000;
+}
+
+.meta {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.3;
+}
+
+.sub {
+  margin-top: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- narrow panel: stack instead of side-by-side --- */
+
+@media (max-width: 700px) {
+  #stage {
+    flex-direction: column;
+  }
+
+  #sidebar {
+    flex: 0 0 200px;
+  }
+
+  #splitter {
+    cursor: row-resize;
+  }
+}
