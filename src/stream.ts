@@ -1,4 +1,20 @@
 import type { Innertube } from 'youtubei.js' with { 'resolution-mode': 'import' };
+import { innertube } from './innertube';
+
+/** Highest picture the panel offers; above this the decode cost outruns what a panel can show. */
+const MAX_HEIGHT = 1080;
+/** Picked when nothing else is asked for. */
+export const DEFAULT_HEIGHT = 720;
+
+export interface VideoOption {
+  height: number;
+  /** "720p", "1080p60". */
+  label: string;
+  /** "H.264", "VP9", "AV1" — shown because only H.264 is certain to decode here. */
+  codec: string;
+  mime: string;
+  url: string;
+}
 
 export interface StreamInfo {
   id: string;
@@ -7,8 +23,15 @@ export interface StreamInfo {
   duration: number;
   videoUrl: string;
   videoMime: string;
+  /** One track per available height, tallest first. */
+  videos: VideoOption[];
   /** WebM/Opus, audio only. */
   audioUrl: string;
+}
+
+/** Tallest option at or below the requested height, falling back to the shortest one offered. */
+export function pickQuality(videos: VideoOption[], maxHeight: number): VideoOption {
+  return videos.find((video) => video.height <= maxHeight) ?? videos[videos.length - 1];
 }
 
 /**
@@ -18,10 +41,8 @@ export interface StreamInfo {
  * `server.ts` decodes to PCM on the extension host.
  */
 export class StreamResolver {
-  private client?: Promise<Innertube>;
-
   async resolve(id: string): Promise<StreamInfo> {
-    const yt = await this.innertube();
+    const yt = await innertube();
     // The web client only offers server-side ABR (no plain URLs). ANDROID_VR still hands out
     // directly fetchable URLs for both Opus and H.264 tracks.
     const info = await yt.getInfo(id, { client: 'ANDROID_VR' });
@@ -38,16 +59,16 @@ export class StreamResolver {
     const audio = formats
       .filter((f) => f.has_audio && !f.has_video && f.mime_type.includes('opus'))
       .sort((a, b) => b.bitrate - a.bitrate)[0];
-    const video =
-      pickVideo(formats, 'avc1') ?? pickVideo(formats, 'vp9') ?? pickVideo(formats, '');
-    if (!audio || !video) {
+    const videos = collectVideos(formats);
+    if (!audio || !videos.length) {
       throw new Error('No playable streams were offered for this video.');
     }
 
-    if (!audio.url || !video.url) {
+    if (!audio.url) {
       throw new Error('Streams need deciphering, which is not supported.');
     }
 
+    const video = pickQuality(videos, DEFAULT_HEIGHT);
     return {
       id,
       title: info.basic_info.title ?? '',
@@ -55,20 +76,10 @@ export class StreamResolver {
         ? audio.approx_duration_ms / 1000
         : (info.basic_info.duration ?? 0),
       videoUrl: video.url,
-      videoMime: video.mime_type,
+      videoMime: video.mime,
+      videos,
       audioUrl: audio.url
     };
-  }
-
-  private innertube(): Promise<Innertube> {
-    // A locally generated visitor id trips YouTube's bot check; let the session fetch a real one.
-    // ANDROID_VR URLs need no signature or n-parameter transform, so the player script (whose
-    // deciphering would require a JS evaluator) is skipped entirely.
-    this.client ??= import('youtubei.js').then(({ Innertube, Log }) => {
-      Log.setLevel(Log.Level.NONE);
-      return Innertube.create({ retrieve_player: false });
-    });
-    return this.client;
   }
 }
 
@@ -78,11 +89,40 @@ type Format = Awaited<ReturnType<Innertube['getInfo']>>['streaming_data'] extend
   ? F
   : never;
 
-/** Highest-bitrate video-only track of the given codec at panel-friendly 720p or below. */
-function pickVideo(formats: Format[], codec: string): Format | undefined {
-  return formats
-    .filter(
-      (f) => f.has_video && !f.has_audio && f.mime_type.includes(codec) && (f.height ?? 0) <= 720
-    )
-    .sort((a, b) => b.bitrate - a.bitrate)[0];
+/** One video-only track per height, best codec first and bitrate as the tie-breaker. */
+function collectVideos(formats: Format[]): VideoOption[] {
+  const best = new Map<number, Format>();
+  for (const format of formats) {
+    const height = format.height ?? 0;
+    if (!format.has_video || format.has_audio || !format.url || !height || height > MAX_HEIGHT) {
+      continue;
+    }
+    const current = best.get(height);
+    if (!current || score(format) > score(current)) {
+      best.set(height, format);
+    }
+  }
+
+  return [...best.values()]
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
+    .map((format) => ({
+      height: format.height ?? 0,
+      label: `${format.height}p${(format.fps ?? 0) >= 50 ? format.fps : ''}`,
+      codec: codecOf(format.mime_type),
+      mime: format.mime_type,
+      url: format.url!
+    }));
+}
+
+/** H.264 outranks everything: it is the one codec this build is certain to decode. */
+function score(format: Format): number {
+  const codec = format.mime_type.includes('avc1') ? 2 : format.mime_type.includes('vp9') ? 1 : 0;
+  return codec * 1e9 + format.bitrate;
+}
+
+function codecOf(mime: string): string {
+  if (mime.includes('avc1')) {
+    return 'H.264';
+  }
+  return mime.includes('vp9') ? 'VP9' : mime.includes('av01') ? 'AV1' : '';
 }
