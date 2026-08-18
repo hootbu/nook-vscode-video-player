@@ -1,68 +1,192 @@
-# Player
+<p align="center">
+  <img src="media/icon.png" alt="" width="88" height="88">
+</p>
 
-A video player that lives in the VS Code bottom panel, next to the terminal.
+<h1 align="center">Nook</h1>
 
-## Running it
+<p align="center">
+  <strong>A video player that lives in your VS Code panel, right next to the terminal.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/VS%20Code-1.90%2B-007ACC?logo=visualstudiocode&logoColor=white" alt="VS Code 1.90+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/status-hobby%20project-lightgrey" alt="Hobby project">
+</p>
+
+<details>
+<summary><b>🇹🇷&nbsp; Türkçe</b> &nbsp;</summary>
+<br>
+
+Nook'u, tek ekranda kod yazarken picture-in-picture pencereleriyle uğraşmaktan yorulduğum için geliştirdim. Videonun, her seferinde yeniden yerleştirilmesi gereken ve kodun üstünde bir yerlerde duran gezgin bir pencerede değil; editörün içinde, kendine ait sabit bir yerde olmasını istedim. Terminalin yanındaki o boşluk, yani alt panel, tam da bunun için uygundu.
+
+<!-- ekran görüntüsü buraya -->
+
+## Neler yapar
+
+- Alt panelde, terminalin hemen yanında video oynatır.
+- Arama kutusuna yazdıklarınızı arar; bir bağlantı yapıştırdığınızda ise videoyu doğrudan açar.
+- Kanal adına tıkladığınızda o kanalın videolarını listeler.
+- Görüntü kalitesini seçmenize olanak tanır.
+- Son 50 videoyu hatırlar ve yarım bıraktığınız yerden devam eder.
+- Panel kapalıyken dahi sesi çalmayı sürdürür.
+- Oynatılan videonun adını durum çubuğunda gösterir; üzerine tıkladığınızda oynatmayı durdurur.
+
+## Kullanım
+
+Panelden **Nook** sekmesini açın.
+
+**İzlemek için** arama kutusuna aramak istediğinizi yazıp Enter tuşuna basın. Elinizde bir bağlantı varsa doğrudan yapıştırmanız yeterlidir; standart video adreslerinin yanı sıra `youtu.be`, Shorts ve `embed` biçimlerinin tamamı tanınır.
+
+**Kanal gezinmek için** sonuçlarda yer alan kanal adına tıklayın. Kanalın videoları, popüler içerikleri ve oynatma listeleri ayrı sekmeler hâlinde açılır. Geri düğmesi sizi arama sonuçlarına döndürür.
+
+**Kaliteyi değiştirmek için** kontrol çubuğundaki ayar düğmesini kullanın. Seçtiğiniz kalite sonraki videolarda da korunur.
+
+**Geçmişe ulaşmak için** arama kutusunun yanındaki saat simgesine tıklayın. Yarım kalan videolar nerede bırakıldıklarını gösterir ve tıklandığında oradan devam eder. **Clear** düğmesi listeyi temizler.
+
+**Yerden kazanmak için** arama listesini gizleyebilir, aradaki ayırıcıyı sürükleyerek genişliği ayarlayabilir veya paneli tam ekrana genişletebilirsiniz. Videonun ayrıca kendi tam ekran düğmesi bulunur.
+
+Oynatmayı, komut paletindeki **Nook: Play / Pause** komutuyla da duraklatabilirsiniz; video ekranda görünmüyorken en pratik yöntem budur.
+
+## Kurulum
+
+Eklenti Marketplace'te yayımlanmadığından kendi bilgisayarınızda derlemeniz gerekir:
 
 ```bash
+git clone https://github.com/hootbu/nook-vscode-video-player.git
+cd nook-vscode-video-player
 npm install
 npm run compile
 ```
 
-Then press <kbd>F5</kbd> (or run `code --extensionDevelopmentPath="$PWD"`). In the new window,
-open the panel and pick the **Player** tab.
+Ardından klasörü VS Code'un eklenti dizinine bağlayın ve editörü tümüyle kapatıp yeniden açın:
 
-Type a search term, or paste a link — `watch?v=`, `youtu.be/`, `/shorts/`, `/live/` and
-`/embed/` forms are all recognised and play immediately.
+```bash
+ln -s "$PWD" ~/.vscode/extensions/hootbu.nook
+```
 
-`npm test` compiles and runs the unit tests over the demuxer and the YouTube parsers.
+Yalnızca denemek isterseniz projeyi VS Code'da açıp <kbd>F5</kbd> tuşuna basmanız yeterlidir; açılan pencerenin panelinde Nook sekmesi sizi bekliyor olacaktır.
 
-## How it works
+macOS, Windows ve Linux üzerinde çalışır; VS Code 1.90 veya üzeri sürüm gerektirir.
 
-The obvious approach — embedding YouTube's own player — cannot make a sound here. VS Code's
-Electron ships a trimmed ffmpeg with no Opus or AAC decoder, so every embedded video fails with
-the same silent error. So the extension fetches the raw adaptive streams itself and splits the
-two tracks down separate paths:
+## Bilinmesi gerekenler
 
-- **Picture.** A video-only H.264 track, which this build does decode. Its URL goes straight to
-  a `<video>` element in the webview, which seeks and buffers it natively.
-- **Sound.** A separate Opus track. The extension host streams it, pulls the Opus packets out of
-  the WebM container (`webm.ts`), and posts them to the webview, where a WebAssembly libopus
-  decodes them and WebAudio plays the PCM. The `<video>` element stays the clock; the sound
-  re-pins itself to it whenever the two drift apart.
-- **Search and channels** go through the same public endpoint the YouTube web client uses. No API
-  key, no quota, no setup.
+**Hiçbir şey indirmez.** Diske tek bir dosya dahi yazmaz. Yalnızca izlemekte olduğunuz bölüm, yaklaşık on beş saniyelik bir payla bellekte tutulur; duraklattığınızda ise saniyeler içinde veri çekmeyi bırakır. Kalıcı olarak sakladığı tek şey son 50 videonun adı ve kaldığınız konumdur; VS Code'un kendi ayar deposunda duran birkaç kilobaytlık bu metin **Clear** ile silinir.
 
-Nothing is written to disk, and nothing is fetched further ahead than what is being watched — the
-feed keeps about fifteen seconds of audio in front of the playhead and then waits. Pause the video
-and it stops pulling within seconds.
+**Canlı yayınlar açılmaz.** Canlı içerik bütünüyle farklı bir biçimde yayımlandığından bu oynatıcı tarafından desteklenmez.
 
-The view is registered with `retainContextWhenHidden`, so audio keeps playing while the panel is
-collapsed or another panel tab is focused. While something is playing, the status bar carries its
-title and doubles as a play/pause button — reachable from the palette too, as **Player: Play /
-Pause**.
+**Oturum açılamaz.** Dolayısıyla üyelere özel videolar, satın alınmış içerikler ve yaş sınırlı videoların çoğu erişilebilir değildir.
 
-The sidebar remembers the last 50 videos watched and how far each got, so a half-watched video
-picks up where it was left. That list lives in the extension's `globalState`, is a few kilobytes
-all told, and **Clear** empties it.
+**Üst sınır 1080p'dir.** Editörün güvenilir biçimde çözebildiği tek video biçimiyle sınırlı olduğundan 4K desteklenmez.
 
-## Known ceilings
+**Zaman zaman çalışmayabilir.** YouTube tarafındaki bir değişiklik videoların açılmasını engelleyebilir. Böyle bir durumda ilk denenmesi gereken:
 
-These are properties of the platform, not missing features:
+```bash
+npm update youtubei.js && npm run compile
+```
 
-- **Live streams are not supported.** They are served as segmented DASH, which this single-URL,
-  byte-range reader does not speak.
-- **No sign-in**, so members-only videos, purchases and anything else tied to an account are out
-  of reach. Age-restricted videos usually are too.
-- **Streams needing deciphering are refused** rather than played. The extension asks YouTube as
-  the `ANDROID_VR` client, which still hands out directly fetchable URLs; when that stops being
-  true, evaluating YouTube's signature JavaScript would be the only way on.
-- **1080p is the ceiling**, and H.264 is preferred over VP9 and AV1 wherever both are offered —
-  it is the one codec this build is certain to decode.
+<br>
 
-## Settings
+<details>
+<summary><b>Sorumluluk reddi</b></summary>
+<br>
 
-| Setting | Default | Description |
-| --- | --- | --- |
-| `player.language` | `tr` | Search language (`hl`) |
-| `player.region` | `TR` | Search region (`gl`) |
+Nook, hobi amacıyla geliştirdiğim deneysel bir projedir. Satılmaz, gelir getirmez ve Marketplace dâhil hiçbir mağazada yayımlanmayacaktır. YouTube ile herhangi bir bağlantısı ya da YouTube tarafından verilmiş bir onayı bulunmamaktadır.
+
+Uygulama içerik barındırmaz, dağıtmaz ve indirmez; videolar YouTube'un kendi sunucularından akar ve telif hakları hak sahiplerine aittir. Videoyu YouTube'un kendi oynatıcısı dışında oynattığı için YouTube'un kullanım şartlarıyla bağdaşmaz. Kurma ve kullanma kararı, doğabilecek sonuçlarla birlikte tümüyle kullanıcıya aittir; geliştirici olarak herhangi bir sorumluluk kabul etmiyorum. Yazılım, [MIT Lisansı](LICENSE) kapsamında "olduğu gibi" sunulmaktadır.
+
+Hak sahiplerinden gelecek bir itiraz hâlinde bu depoyu kaldırırım.
+
+</details>
+
+## Lisans
+
+MIT © Emir Yorgun
+
+<hr>
+</details>
+
+I built Nook because I grew tired of wrestling with picture-in-picture windows while coding on a single screen. I wanted the video to have a fixed place of its own inside the editor, rather than a floating window that has to be repositioned every time and sits somewhere on top of my code. The empty space beside the terminal, the bottom panel, turned out to be exactly right.
+
+<!-- screenshot here -->
+
+## What it does
+
+- Plays video in the bottom panel, right next to your terminal.
+- Searches whatever you type, and opens a link the moment you paste one.
+- Lists a channel's videos when you click its name.
+- Lets you choose the picture quality.
+- Remembers your last 50 videos and resumes where you left off.
+- Keeps playing even while the panel is collapsed.
+- Shows the current video's title in the status bar; clicking it stops playback.
+
+## Using it
+
+Open the **Nook** tab in the panel.
+
+**To watch something,** type your search in the box and press Enter. If you already have a link, simply paste it; alongside standard video addresses, `youtu.be`, Shorts and `embed` formats are all recognised.
+
+**To browse a channel,** click its name in the results. The channel's videos, popular uploads and playlists open as separate tabs. The back button returns you to your search results.
+
+**To change quality,** use the settings button in the control bar. Your choice carries over to the next video.
+
+**To reach your history,** click the clock icon beside the search box. Half-watched videos show where they were left off and resume from there when clicked. The **Clear** button empties the list.
+
+**To save space,** hide the search list, drag the divider to adjust its width, or expand the panel to full screen. The video also has a fullscreen button of its own.
+
+You can pause playback from the command palette as well, with **Nook: Play / Pause**, the most practical option when the video isn't on screen.
+
+## Install
+
+The extension isn't published on the Marketplace, so you build it on your own machine:
+
+```bash
+git clone https://github.com/hootbu/nook-vscode-video-player.git
+cd nook-vscode-video-player
+npm install
+npm run compile
+```
+
+Then link the folder into VS Code's extensions directory and restart the editor completely:
+
+```bash
+ln -s "$PWD" ~/.vscode/extensions/hootbu.nook
+```
+
+If you only want to try it out, open the project in VS Code and press <kbd>F5</kbd>; the Nook tab will be waiting in the panel of the window that opens.
+
+Works on macOS, Windows and Linux, and requires VS Code 1.90 or newer.
+
+## Good to know
+
+**It downloads nothing.** Not a single file touches your disk. Only the part you're watching is held in memory, with roughly fifteen seconds of headroom, and it stops pulling data within seconds of you pausing. The only thing kept permanently is the title and position of your last 50 videos: a few kilobytes of text in VS Code's own settings storage, cleared with **Clear**.
+
+**Live streams won't open.** Live content is broadcast in an entirely different format, which this player doesn't support.
+
+**There's no sign-in.** Members-only videos, purchased content and most age-restricted videos are therefore out of reach.
+
+**1080p is the ceiling.** The player is limited to the one video format the editor decodes reliably, so 4K isn't supported.
+
+**It may stop working from time to time.** A change on YouTube's side can prevent videos from opening. The first thing to try:
+
+```bash
+npm update youtubei.js && npm run compile
+```
+
+<br>
+
+<details>
+<summary><b>Disclaimer</b></summary>
+<br>
+
+Nook is an experimental project I built as a hobby. It is not sold, it earns nothing, and it will not be published on the Marketplace or any other store. It has no connection to YouTube and carries no endorsement from them.
+
+The extension hosts, distributes and downloads no content; video is streamed from YouTube's own servers, and the copyright in it belongs to the rights holders. Because it plays video outside YouTube's own player, it does not sit well with YouTube's terms of service. The decision to install and use it, along with any consequences that follow, rests entirely with the user; as the developer, I accept no liability. The software is provided "as is" under the [MIT License](LICENSE).
+
+Should a rights holder object, I will take this repository down.
+
+</details>
+
+## License
+
+MIT © Emir Yorgun
