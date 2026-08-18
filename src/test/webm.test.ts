@@ -14,6 +14,11 @@ const ID_TIMECODE_SCALE = 0x2ad7b1;
 const ID_TRACKS = 0x1654ae6b;
 const ID_TRACK_ENTRY = 0xae;
 const ID_CODEC_PRIVATE = 0x63a2;
+const ID_CUES = 0x1c53bb6b;
+const ID_CUE_POINT = 0xbb;
+const ID_CUE_TIME = 0xb3;
+const ID_CUE_TRACK_POSITIONS = 0xb7;
+const ID_CUE_CLUSTER_POSITION = 0xf1;
 const ID_CLUSTER = 0x1f43b675;
 const ID_TIMECODE = 0xe7;
 const ID_SIMPLE_BLOCK = 0xa3;
@@ -96,6 +101,49 @@ function file(scale = 1_000_000): Buffer {
   );
 }
 
+/**
+ * The same file with a Cues index ahead of the clusters, as YouTube writes it. Positions in the
+ * index count from the first byte inside the Segment; the index's own length moves the clusters,
+ * so it is built again until it agrees with itself.
+ */
+function indexedFile(): { source: Buffer; clusters: number[] } {
+  const header = Buffer.concat([
+    el(ID_INFO, el(ID_TIMECODE_SCALE, uint(1_000_000))),
+    el(ID_TRACKS, el(ID_TRACK_ENTRY, el(ID_CODEC_PRIVATE, opusHead())))
+  ]);
+  const clusters = [cluster(0, [block(0, 'one'), block(20, 'two')]), cluster(1000, [block(0, 'three')])];
+  const times = [0, 1000];
+
+  let positions = [0, 0];
+  let cues: Buffer;
+  for (;;) {
+    cues = el(
+      ID_CUES,
+      Buffer.concat(
+        positions.map((position, i) =>
+          el(
+            ID_CUE_POINT,
+            Buffer.concat([
+              el(ID_CUE_TIME, uint(times[i])),
+              el(ID_CUE_TRACK_POSITIONS, el(ID_CUE_CLUSTER_POSITION, uint(position)))
+            ])
+          )
+        )
+      )
+    );
+    const first = header.length + cues.length;
+    const next = [first, first + clusters[0].length];
+    if (next[0] === positions[0] && next[1] === positions[1]) {
+      break;
+    }
+    positions = next;
+  }
+
+  const source = el(ID_SEGMENT, Buffer.concat([header, cues, ...clusters]));
+  const segmentAt = source.length - (header.length + cues.length + clusters[0].length + clusters[1].length);
+  return { source, clusters: positions.map((position) => segmentAt + position) };
+}
+
 function payloads(packets: OpusPacket[]): string[] {
   return packets.map((packet) => packet.data.toString('latin1'));
 }
@@ -156,4 +204,55 @@ test('starting mid-file skips to the first real cluster', () => {
 test('laced blocks are dropped rather than mangled', () => {
   const laced = cluster(0, [block(0, 'fixed-lacing', 0x82)]);
   assert.deepEqual(new WebmOpusReader(true).push(laced), []);
+});
+
+test('the Cues index is read on the way past, with positions counted from the top of the file', () => {
+  const { source, clusters } = indexedFile();
+  const reader = new WebmOpusReader();
+  const packets = reader.push(source);
+
+  assert.equal(reader.atClusters, true);
+  assert.deepEqual(reader.cues, [
+    { time: 0, byte: clusters[0] },
+    { time: 1, byte: clusters[1] }
+  ]);
+  // The index really does point at cluster headers, and the rest still reads as before.
+  assert.equal(source.readUInt32BE(clusters[1]), ID_CLUSTER);
+  assert.deepEqual(payloads(packets), ['one', 'two', 'three']);
+});
+
+test('the index reads the same when the file arrives one byte at a time', () => {
+  const { source, clusters } = indexedFile();
+  const reader = new WebmOpusReader();
+  for (let at = 0; at < source.length; at++) {
+    reader.push(source.subarray(at, at + 1));
+  }
+
+  assert.deepEqual(
+    reader.cues.map((cue) => cue.byte),
+    clusters
+  );
+});
+
+test('a reader started at an indexed position picks up that cluster and no earlier one', () => {
+  const { source, clusters } = indexedFile();
+  const reader = new WebmOpusReader(true);
+  const packets = reader.push(source.subarray(clusters[1]));
+
+  assert.deepEqual(payloads(packets), ['three']);
+  assert.deepEqual(
+    packets.map((packet) => packet.time),
+    [1]
+  );
+});
+
+test('the head is not enough to be past the index: atClusters waits for the first cluster', () => {
+  const { source, clusters } = indexedFile();
+  const reader = new WebmOpusReader();
+  reader.push(source.subarray(0, clusters[0]));
+
+  assert.ok(reader.head);
+  assert.equal(reader.atClusters, false);
+  reader.push(source.subarray(clusters[0]));
+  assert.equal(reader.atClusters, true);
 });

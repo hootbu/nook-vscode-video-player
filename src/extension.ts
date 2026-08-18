@@ -2,10 +2,11 @@ import * as vscode from 'vscode';
 import { AudioFeed, packPackets } from './audio';
 import { History } from './history';
 import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver } from './stream';
+import { CuePoint } from './webm';
 import { ChannelBrowser, ChannelPage, parseVideoId, search } from './youtube';
 
 const VIEW_ID = 'nookPanel.view';
-/** How far behind a seek target to start reading, so the covering cluster is not missed. */
+/** How far behind an estimated seek target to start reading, so the covering cluster is not missed. */
 const BACKTRACK_SECONDS = 20;
 /** Longer titles are cut down for the status bar, which has the rest of the workbench to share. */
 const STATUS_TITLE_LENGTH = 40;
@@ -245,9 +246,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Restarts the feed at the requested position. The byte offset is estimated from the ratio of
-   * the seek time to the duration; the reader then finds the first cluster after it, which is why
-   * an approximate landing spot is good enough.
+   * Restarts the feed at the requested position. The track's index says which byte the cluster
+   * covering the target starts at, so the reader lands right on it. Without an index the offset is
+   * estimated from the ratio of the seek time to the duration, and the reader finds the first
+   * cluster after it. Either way nothing can begin until the head has been read from the top.
    */
   private async handleSeek(webview: vscode.Webview, time: number) {
     const session = this.session;
@@ -258,12 +260,18 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     const head = session.head;
     session.feed?.dispose();
 
-    // Land before the target, not after it: clusters are seconds long, and the reader can only
-    // pick up at the start of one. Overshooting would leave a silent gap; the extra audio that
-    // arrives early is simply dropped by the webview as already past.
-    const before = Math.max(0, time - BACKTRACK_SECONDS);
-    const ratio = session.info.duration > 0 ? Math.min(before / session.info.duration, 1) : 0;
-    const startByte = size && head ? Math.floor(size * ratio) : 0;
+    let startByte = 0;
+    const cue = head && lastCueBefore(session.cues ?? [], time);
+    if (cue) {
+      startByte = cue.byte;
+    } else if (head && size) {
+      // Land before the target, not after it: clusters are seconds long, and the reader can only
+      // pick up at the start of one. Overshooting would leave a silent gap; the extra audio that
+      // arrives early is simply dropped by the webview as already past.
+      const before = Math.max(0, time - BACKTRACK_SECONDS);
+      const ratio = session.info.duration > 0 ? Math.min(before / session.info.duration, 1) : 0;
+      startByte = Math.floor(size * ratio);
+    }
     session.feed = this.startFeed(webview, session, { startByte, startTime: time, head });
   }
 
@@ -283,8 +291,11 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         return session.info.audioUrl;
       },
       {
-        head: (head) => {
+        head: (head, cues) => {
           session.head = head;
+          if (cues.length) {
+            session.cues = cues;
+          }
           // OpusHead only exists at the top of the file, so a video being resumed is read from the
           // start until it turns up — and only then can the feed jump to where it was left off.
           // By now the track's size is known too, which is what makes that jump possible.
@@ -416,8 +427,22 @@ interface Session {
   info: StreamInfo;
   feed?: AudioFeed;
   head?: Buffer;
+  /** The audio track's index, once the feed has read past it. */
+  cues?: CuePoint[];
   /** Set only until the head arrives and the feed can be moved to where watching left off. */
   resumeAt?: number;
+}
+
+/** The cue whose cluster covers `time`: the last one starting at or before it. */
+function lastCueBefore(cues: CuePoint[], time: number): CuePoint | undefined {
+  let found: CuePoint | undefined;
+  for (const cue of cues) {
+    if (cue.time > time) {
+      break;
+    }
+    found = cue;
+  }
+  return found;
 }
 
 function createNonce(): string {

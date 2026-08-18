@@ -1,4 +1,4 @@
-import { OpusPacket, WebmOpusReader } from './webm';
+import { CuePoint, OpusPacket, WebmOpusReader } from './webm';
 
 const CHUNK_SIZE = 512 * 1024;
 /** How far ahead of playback the feed is allowed to run before it waits. */
@@ -7,7 +7,8 @@ const RENEW_ATTEMPTS = 2;
 const RENEW_DELAY_MS = 700;
 
 export interface AudioSink {
-  head(head: Buffer): void;
+  /** `cues` is the track's index — empty when the feed was started mid-file with a known head. */
+  head(head: Buffer, cues: CuePoint[]): void;
   packets(packets: OpusPacket[]): void;
   ended(): void;
   failed(message: string): void;
@@ -45,7 +46,7 @@ export class AudioFeed {
 
     if (options.head) {
       this.headSent = true;
-      sink.head(options.head);
+      sink.head(options.head, []);
     }
 
     this.run().catch((error: Error) => {
@@ -115,9 +116,11 @@ export class AudioFeed {
   }
 
   private emit(packets: OpusPacket[]) {
-    if (!this.headSent && this.reader.head) {
+    // Held until the first cluster: the Cues sit between the head and it, and a seek made on the
+    // head's arrival (resuming a video) needs them complete.
+    if (!this.headSent && this.reader.head && this.reader.atClusters) {
       this.headSent = true;
-      this.sink.head(this.reader.head);
+      this.sink.head(this.reader.head, this.reader.cues);
     }
     if (packets.length) {
       this.ahead = packets[packets.length - 1].time;

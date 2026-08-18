@@ -4,6 +4,10 @@
  * A full demuxer is not needed and a streaming one is: packets are handed over as they arrive,
  * and playback may start from the middle of the file, where there is no EBML header to read —
  * clusters are self-describing, so the reader can hunt for one and pick up from there.
+ *
+ * The Cues index is picked up on the way past when reading from the top: YouTube writes it ahead
+ * of the first cluster, and it says which byte each cluster starts at, which is what makes a seek
+ * land exactly rather than by estimate.
  */
 
 const ID_SEGMENT = 0x18538067;
@@ -12,6 +16,11 @@ const ID_TIMECODE_SCALE = 0x2ad7b1;
 const ID_TRACKS = 0x1654ae6b;
 const ID_TRACK_ENTRY = 0xae;
 const ID_CODEC_PRIVATE = 0x63a2;
+const ID_CUES = 0x1c53bb6b;
+const ID_CUE_POINT = 0xbb;
+const ID_CUE_TIME = 0xb3;
+const ID_CUE_TRACK_POSITIONS = 0xb7;
+const ID_CUE_CLUSTER_POSITION = 0xf1;
 const ID_CLUSTER = 0x1f43b675;
 const ID_TIMECODE = 0xe7;
 const ID_SIMPLE_BLOCK = 0xa3;
@@ -24,6 +33,9 @@ const MASTERS = new Set([
   ID_INFO,
   ID_TRACKS,
   ID_TRACK_ENTRY,
+  ID_CUES,
+  ID_CUE_POINT,
+  ID_CUE_TRACK_POSITIONS,
   ID_CLUSTER,
   ID_BLOCK_GROUP
 ]);
@@ -32,6 +44,8 @@ const MASTERS = new Set([
 const WANTED = new Set([
   ID_TIMECODE_SCALE,
   ID_CODEC_PRIVATE,
+  ID_CUE_TIME,
+  ID_CUE_CLUSTER_POSITION,
   ID_TIMECODE,
   ID_SIMPLE_BLOCK,
   ID_BLOCK
@@ -46,12 +60,32 @@ export interface OpusPacket {
   time: number;
 }
 
+/** One entry of the Cues index: the cluster starting at `byte` begins at `time`. */
+export interface CuePoint {
+  /** Seconds. */
+  time: number;
+  /** Offset from the start of the file. */
+  byte: number;
+}
+
 export class WebmOpusReader {
   /** OpusHead, needed to configure the decoder (channel count and pre-skip live in it). */
   head?: Buffer;
+  /** The Cues index, in file order; complete once the first cluster is reached. */
+  cues: CuePoint[] = [];
+  /** Whether the first cluster has been reached — past the header, and so past the Cues too. */
+  atClusters = false;
 
   private pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private skipping = 0;
+  /**
+   * How many bytes have been consumed before `pending`; the file offset of `pending[0]` when
+   * reading from the top, which is the only time the Cues, whose positions this anchors, are met.
+   */
+  private base = 0;
+  /** File offset the Cues positions are relative to: the first byte inside the Segment. */
+  private segmentAt = 0;
+  private cueTime = 0;
   private clusterTime = 0;
   // Timecode units → seconds. The default TimecodeScale is 1ms, and it must be assumed when
   // starting mid-file, where the header that declares it is far behind us.
@@ -94,6 +128,11 @@ export class WebmOpusReader {
 
       const body = at + element.header;
       if (MASTERS.has(element.id)) {
+        if (element.id === ID_SEGMENT) {
+          this.segmentAt = this.base + body;
+        } else if (element.id === ID_CLUSTER) {
+          this.atClusters = true;
+        }
         at = body;
         continue;
       }
@@ -116,6 +155,7 @@ export class WebmOpusReader {
       at = end;
     }
 
+    this.base += at;
     this.pending = at > 0 ? this.pending.subarray(at) : this.pending;
     return packets;
   }
@@ -161,6 +201,14 @@ export class WebmOpusReader {
     }
     if (id === ID_TIMECODE_SCALE) {
       this.scale = readUint(body) / 1e9;
+      return;
+    }
+    if (id === ID_CUE_TIME) {
+      this.cueTime = readUint(body) * this.scale;
+      return;
+    }
+    if (id === ID_CUE_CLUSTER_POSITION) {
+      this.cues.push({ time: this.cueTime, byte: this.segmentAt + readUint(body) });
       return;
     }
     if (id === ID_TIMECODE) {
