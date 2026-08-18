@@ -305,12 +305,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
             void this.handleSeek(webview, target);
             return;
           }
-          webview.postMessage({
-            type: 'audio-head',
-            generation,
-            head: head.toString('base64'),
-            reset: options.startTime ?? 0
-          });
+          webview.postMessage({ type: 'audio-head', generation, head: head.toString('base64') });
         },
         packets: (packets) => {
           webview.postMessage({ type: 'audio', generation, batch: packPackets(packets) });

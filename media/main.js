@@ -420,8 +420,10 @@
       }, 3000);
     }
   });
+  // Landing in already-buffered picture may not announce itself with 'playing'; landing anywhere
+  // else will, and starting the sound before then would only have it replayed from here.
   video.addEventListener('seeked', () => {
-    if (!video.paused) {
+    if (moving()) {
       audio.restart(video.currentTime);
     }
   });
@@ -450,8 +452,13 @@
   });
   video.addEventListener('timeupdate', () => {
     renderTime();
-    audio.sync(video.currentTime, !video.paused && video.readyState >= 3);
+    audio.sync(video.currentTime, moving());
   });
+
+  /** Whether the picture is actually advancing: playing, with frames in hand to keep going. */
+  function moving() {
+    return !video.paused && video.readyState >= 3;
+  }
 
   // Tell the feed where playback is so it keeps just enough audio ahead of us.
   setInterval(() => {
@@ -827,7 +834,12 @@
       if (generation !== message.generation) {
         return; // superseded while the decoder was starting up
       }
-      audio.anchor(message.reset || 0);
+      // Pinned to the picture's clock only if the picture is moving. Otherwise — still buffering
+      // after a seek, say — the decoded audio waits, and 'playing' pins it when the picture goes;
+      // sound set going on its own here would only be pulled back to the start when it does.
+      if (moving()) {
+        audio.anchor(video.currentTime);
+      }
     } else if (message.type === 'audio') {
       if (message.generation === generation) {
         audio.push(unpack(message.batch));
