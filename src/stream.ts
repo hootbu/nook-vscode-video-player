@@ -1,5 +1,5 @@
-import type { Innertube } from 'youtubei.js' with { 'resolution-mode': 'import' };
-import { innertube } from './innertube';
+import type { Innertube, Player } from 'youtubei.js' with { 'resolution-mode': 'import' };
+import { innertube, withPlayer } from './innertube';
 
 /** Highest picture the panel offers; above this the decode cost outruns what a panel can show. */
 const MAX_HEIGHT = 1080;
@@ -14,6 +14,8 @@ export interface VideoOption {
   codec: string;
   mime: string;
   url: string;
+  /** Bytes, when YouTube says. */
+  length?: number;
 }
 
 export interface StreamInfo {
@@ -46,53 +48,87 @@ export function pickQuality(videos: VideoOption[], maxHeight: number): VideoOpti
 }
 
 /**
+ * Clients asked for stream URLs, in order. The web client only offers server-side ABR (no plain
+ * URLs). VISIONOS still hands out directly fetchable URLs for both Opus and H.264 tracks, with no
+ * PO token. TV_SIMPLY does too, but signed, so it costs the player script — it is the fallback for
+ * the day VISIONOS goes the way of ANDROID_VR, whose URLs began serving only their first few
+ * megabytes in 2026-08 (403 beyond that; long enough for a clip, not for a video).
+ */
+const CLIENTS = ['VISIONOS', 'TV_SIMPLY'] as const;
+
+/**
  * VS Code's Electron ships an ffmpeg without Opus or AAC decoders, so YouTube's own player can
  * never produce sound inside a webview. Instead the extension fetches the raw adaptive streams
  * itself: a video-only track the webview can decode natively, and an Opus track that
  * `server.ts` decodes to PCM on the extension host.
  */
 export class StreamResolver {
+  /** Each client gets a go; if none serves the video, the first one's complaint is the one told. */
   async resolve(id: string): Promise<StreamInfo> {
-    const yt = await innertube();
-    // The web client only offers server-side ABR (no plain URLs). ANDROID_VR still hands out
-    // directly fetchable URLs for both Opus and H.264 tracks.
-    const info = await yt.getInfo(id, { client: 'ANDROID_VR' });
-
-    const status = info.playability_status;
-    if (status && status.status !== 'OK') {
-      throw new Error(status.reason || `Video is not playable (${status.status}).`);
+    let firstError: unknown;
+    for (const client of CLIENTS) {
+      try {
+        return await resolveWith(id, client);
+      } catch (error) {
+        firstError ??= error;
+      }
     }
-    if (info.basic_info.is_live) {
-      throw new Error('Live streams are not supported.');
-    }
-
-    const formats = info.streaming_data?.adaptive_formats ?? [];
-    const audio = formats
-      .filter((f) => f.has_audio && !f.has_video && f.mime_type.includes('opus'))
-      .sort((a, b) => b.bitrate - a.bitrate)[0];
-    const videos = collectVideos(formats);
-    if (!audio || !videos.length) {
-      throw new Error('No playable streams were offered for this video.');
-    }
-
-    if (!audio.url) {
-      throw new Error('Streams need deciphering, which is not supported.');
-    }
-
-    const video = pickQuality(videos, DEFAULT_HEIGHT);
-    return {
-      id,
-      title: info.basic_info.title ?? '',
-      author: info.basic_info.author ?? '',
-      duration: audio.approx_duration_ms
-        ? audio.approx_duration_ms / 1000
-        : (info.basic_info.duration ?? 0),
-      videoUrl: video.url,
-      videoMime: video.mime,
-      videos,
-      audioUrl: audio.url
-    };
+    throw firstError;
   }
+}
+
+async function resolveWith(id: string, client: (typeof CLIENTS)[number]): Promise<StreamInfo> {
+  const yt = client === 'TV_SIMPLY' ? await withPlayer() : await innertube();
+  const info = await yt.getInfo(id, { client });
+
+  const status = info.playability_status;
+  if (status && status.status !== 'OK') {
+    throw new Error(status.reason || `Video is not playable (${status.status}).`);
+  }
+  if (info.basic_info.is_live) {
+    throw new Error('Live streams are not supported.');
+  }
+
+  const formats = info.streaming_data?.adaptive_formats ?? [];
+  const audio = formats
+    .filter((f) => f.has_audio && !f.has_video && f.mime_type.includes('opus'))
+    .sort((a, b) => b.bitrate - a.bitrate)[0];
+  const videos = await collectVideos(formats, yt.session.player);
+  if (!audio || !videos.length) {
+    throw new Error('No playable streams were offered for this video.');
+  }
+
+  const video = pickQuality(videos, DEFAULT_HEIGHT);
+  if (!(await servesWhole(video.url, video.length))) {
+    throw new Error('YouTube is serving only part of this video\'s stream.');
+  }
+
+  return {
+    id,
+    title: info.basic_info.title ?? '',
+    author: info.basic_info.author ?? '',
+    duration: audio.approx_duration_ms
+      ? audio.approx_duration_ms / 1000
+      : (info.basic_info.duration ?? 0),
+    videoUrl: video.url,
+    videoMime: video.mime,
+    videos,
+    audioUrl: await audio.decipher(yt.session.player)
+  };
+}
+
+/**
+ * Whether the URL serves the track to its end. A capped client answers everything past its first
+ * few megabytes with a 403, so one request for the last byte tells — and a spent URL fails the
+ * same way, which is equally worth moving on from. Unknown length: nothing to check against.
+ */
+async function servesWhole(url: string, length?: number): Promise<boolean> {
+  if (!length) {
+    return true;
+  }
+  const response = await fetch(url, { headers: { Range: `bytes=${length - 1}-${length - 1}` } });
+  await response.body?.cancel().catch(() => {});
+  return response.status === 206;
 }
 
 type Format = Awaited<ReturnType<Innertube['getInfo']>>['streaming_data'] extends
@@ -102,11 +138,11 @@ type Format = Awaited<ReturnType<Innertube['getInfo']>>['streaming_data'] extend
   : never;
 
 /** One video-only track per height, best codec first and bitrate as the tie-breaker. */
-function collectVideos(formats: Format[]): VideoOption[] {
+async function collectVideos(formats: Format[], player?: Player): Promise<VideoOption[]> {
   const best = new Map<number, Format>();
   for (const format of formats) {
     const height = format.height ?? 0;
-    if (!format.has_video || format.has_audio || !format.url || !height || height > MAX_HEIGHT) {
+    if (!format.has_video || format.has_audio || !height || height > MAX_HEIGHT) {
       continue;
     }
     const current = best.get(height);
@@ -115,15 +151,18 @@ function collectVideos(formats: Format[]): VideoOption[] {
     }
   }
 
-  return [...best.values()]
-    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
-    .map((format) => ({
+  const sorted = [...best.values()].sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
+  return Promise.all(
+    sorted.map(async (format) => ({
       height: format.height ?? 0,
       label: `${format.height}p${(format.fps ?? 0) >= 50 ? format.fps : ''}`,
       codec: codecOf(format.mime_type),
       mime: format.mime_type,
-      url: format.url!
-    }));
+      // Plain for the primary client; the fallback's are signed and come out of the player script.
+      url: await format.decipher(player),
+      length: format.content_length
+    }))
+  );
 }
 
 /** H.264 outranks everything: it is the one codec this build is certain to decode. */
