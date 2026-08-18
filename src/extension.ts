@@ -41,6 +41,8 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
   private session?: Session;
   /** Stamps each feed so the webview can tell a superseded one's packets from the current ones. */
   private generation = 0;
+  /** Counts play requests, so a resolve that finishes after a close (or a newer play) is dropped. */
+  private playRequest = 0;
   /** Ceiling the viewer picked; kept across videos, since a taller one is not always offered. */
   private maxHeight = DEFAULT_HEIGHT;
 
@@ -95,8 +97,11 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         }
       } else if (message.type === 'seek') {
         await this.handleSeek(view.webview, message.time);
-      } else if (message.type === 'stop') {
+      } else if (message.type === 'close') {
+        this.playRequest++;
         this.session?.feed?.dispose();
+        this.session = undefined;
+        this.status.hide();
       } else if (message.type === 'refresh-video') {
         await this.handleRefresh(view.webview);
       } else if (message.type === 'quality') {
@@ -178,8 +183,12 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
 
   private async handlePlay(webview: vscode.Webview, id: string) {
     this.session?.feed?.dispose();
+    const request = ++this.playRequest;
     try {
       const info = await this.resolver.resolve(id);
+      if (request !== this.playRequest) {
+        return; // closed, or another video asked for, while this one was resolving
+      }
       const resumeAt = this.history.resumeAt(id);
       const session: Session = { id, info, resumeAt: resumeAt || undefined };
       this.session = session;
@@ -384,6 +393,9 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         </button>
         <button id="maximize" class="ctl" title="Maximize / restore panel">
           <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor"/><rect x="2.5" y="8.5" width="11" height="4"/></svg>
+        </button>
+        <button id="close" class="ctl" title="Close video" disabled>
+          <svg viewBox="0 0 16 16"><path d="M3.5 3.5l9 9m0-9l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
       </div>
     </div>

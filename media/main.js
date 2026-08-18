@@ -13,6 +13,7 @@
   const splitter = document.getElementById('splitter');
   const playerPane = document.getElementById('player-pane');
   const playButton = document.getElementById('play');
+  const closeButton = document.getElementById('close');
   const muteButton = document.getElementById('mute');
   const seek = document.getElementById('seek');
   const volume = document.getElementById('volume');
@@ -279,13 +280,11 @@
   // Which feed the sound currently belongs to; packets from an older one are ignored.
   let generation = -1;
 
-  function requestPlay(id) {
-    setStatus('Loading…');
-    currentId = id;
+  /** Drops whatever is loaded: picture, sound and the numbers on the bar go back to nothing. */
+  function unload() {
+    currentId = '';
     pendingResume = 0;
     videoRetries = 0;
-    // Go quiet immediately: resolving the new streams takes a moment, and the old video should
-    // not keep playing underneath it.
     video.pause();
     video.removeAttribute('src');
     video.load();
@@ -294,12 +293,32 @@
     qualities = [];
     renderQuality(0);
     renderTime();
+    setLoading(false);
+  }
+
+  function requestPlay(id) {
+    // Go quiet immediately: resolving the new streams takes a moment, and the old video should
+    // not keep playing underneath it.
+    unload();
+    setStatus('Loading…');
+    currentId = id;
     setLoading(true);
+    closeButton.disabled = false; // a slow resolve is something to be able to give up on
     vscode.postMessage({ type: 'play', id: id });
+  }
+
+  /** The close button: back to the empty screen, and the feed behind it is torn down too. */
+  function closeVideo() {
+    unload();
+    setStatus('');
+    placeholder.classList.remove('hidden');
+    closeButton.disabled = true;
+    vscode.postMessage({ type: 'close' });
   }
 
   function play(message) {
     placeholder.classList.add('hidden');
+    closeButton.disabled = false;
     currentId = message.id || currentId;
     duration = message.duration || 0;
     audio.clear();
@@ -396,6 +415,7 @@
   }
 
   playButton.addEventListener('click', togglePlay);
+  closeButton.addEventListener('click', closeVideo);
   // The picture itself is a play/pause target too. Nothing loaded means the placeholder covers
   // it, so this only ever fires on a video that is actually there.
   video.addEventListener('click', togglePlay);
