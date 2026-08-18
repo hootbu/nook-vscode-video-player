@@ -5,3 +5,4 @@ src/**
 out/test/**
 tsconfig.json
 **/*.map
+media/nook.png
