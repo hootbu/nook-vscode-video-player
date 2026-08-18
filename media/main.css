@@ -260,6 +260,27 @@ body {
   background: var(--vscode-editor-background);
 }
 
+/* Over the picture while it is being fetched: a new video resolving, a seek landing, a stall. */
+#spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hidden {
   display: none !important;
 }

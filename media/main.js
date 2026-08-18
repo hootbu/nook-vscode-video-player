@@ -6,6 +6,7 @@
   const status = document.getElementById('status');
   const resultsEl = document.getElementById('results');
   const placeholder = document.getElementById('placeholder');
+  const spinner = document.getElementById('spinner');
   const video = document.getElementById('video');
   const stage = document.getElementById('stage');
   const sidebar = document.getElementById('sidebar');
@@ -293,6 +294,7 @@
     qualities = [];
     renderQuality(0);
     renderTime();
+    setLoading(true);
     vscode.postMessage({ type: 'play', id: id });
   }
 
@@ -314,6 +316,14 @@
 
   function setStatus(text) {
     status.textContent = text || '';
+  }
+
+  /**
+   * The ring over the picture. On whenever the picture has been asked for and has not arrived —
+   * a new video, a seek, a stall — and off as soon as it can play, or the wait is called off.
+   */
+  function setLoading(on) {
+    spinner.classList.toggle('hidden', !on);
   }
 
   function unpack(base64) {
@@ -380,6 +390,8 @@
       video.play().catch(() => {});
     } else {
       video.pause();
+      // Nothing is awaited while paused; resuming into a stall brings the ring straight back.
+      setLoading(false);
     }
   }
 
@@ -397,8 +409,14 @@
     audio.silence();
     renderPlayState();
   });
-  video.addEventListener('waiting', () => audio.silence());
+  video.addEventListener('waiting', () => {
+    audio.silence();
+    setLoading(true);
+  });
+  video.addEventListener('seeking', () => setLoading(true));
+  video.addEventListener('canplay', () => setLoading(false));
   video.addEventListener('playing', () => {
+    setLoading(false);
     audio.restart(video.currentTime);
     // Picture is moving, so whatever was refused is behind us: a failure hours from now, when the
     // URL expires on its own, gets its own goes at a fresh one.
@@ -423,6 +441,9 @@
   // Landing in already-buffered picture may not announce itself with 'playing'; landing anywhere
   // else will, and starting the sound before then would only have it replayed from here.
   video.addEventListener('seeked', () => {
+    if (video.readyState >= 3) {
+      setLoading(false); // landed in buffered picture: 'canplay' may not come round again
+    }
     if (moving()) {
       audio.restart(video.currentTime);
     }
@@ -441,6 +462,7 @@
       return;
     }
 
+    setLoading(false);
     const kind =
       { 1: 'aborted', 2: 'network', 3: 'decode', 4: 'source rejected' }[failure && failure.code] ||
       'unknown';
@@ -484,6 +506,7 @@
     const time = (Number(seek.value) / 1000) * duration;
     video.currentTime = time;
     audio.clear();
+    setLoading(true);
     vscode.postMessage({ type: 'seek', time: time });
   });
 
@@ -861,6 +884,7 @@
       renderQuality(message.quality);
     } else if (message.type === 'error') {
       moreButton.disabled = false;
+      setLoading(false);
       setStatus(message.message);
     }
   });

@@ -354,6 +354,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         <div id="placeholder">
           <p>Search for something, or paste a link.</p>
         </div>
+        <div id="spinner" class="hidden"></div>
       </div>
       <div id="controls">
         <button id="play" class="ctl" title="Play / Pause">
