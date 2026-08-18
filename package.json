@@ -23,6 +23,7 @@
     "media",
     "music"
   ],
+  "icon": "media/icon-128.png",
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
