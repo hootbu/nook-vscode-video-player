@@ -2,7 +2,7 @@
 // so testable — outside an extension host.
 import type * as vscode from 'vscode';
 
-const KEY = 'player.history';
+const KEY = 'nook.history';
 /** Kept small on purpose: the whole list is read into memory at startup. */
 const LIMIT = 50;
 /** A position this close to either end is not worth returning to. */

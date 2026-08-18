@@ -1,52 +1,64 @@
 {
-  "name": "vscode-player",
-  "displayName": "Player",
-  "description": "Watch videos in a panel right next to your terminal.",
+  "name": "nook",
+  "displayName": "Nook: Video Player",
+  "description": "A video player that lives in your VS Code panel, right next to the terminal.",
   "version": "0.0.1",
   "publisher": "hootbu",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hootbu/nook-vscode-video-player.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "video",
+    "player",
+    "youtube",
+    "media",
+    "music"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "player.togglePlay",
+        "command": "nook.togglePlay",
         "title": "Play / Pause",
-        "category": "Player"
+        "category": "Nook"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
-          "id": "playerPanel",
-          "title": "Player",
+          "id": "nookPanel",
+          "title": "Nook: Video Player",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "playerPanel": [
+      "nookPanel": [
         {
-          "id": "playerPanel.view",
-          "name": "Player",
+          "id": "nookPanel.view",
+          "name": "Nook: Video Player",
           "type": "webview"
         }
       ]
     },
     "configuration": {
-      "title": "Player",
+      "title": "Nook: Video Player",
       "properties": {
-        "player.region": {
+        "nook.region": {
           "type": "string",
           "default": "TR",
           "description": "Search region code (gl), e.g. TR, US, DE."
         },
-        "player.language": {
+        "nook.language": {
           "type": "string",
           "default": "tr",
           "description": "Search language code (hl), e.g. tr, en, de."

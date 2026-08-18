@@ -4,7 +4,7 @@ import { History } from './history';
 import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver } from './stream';
 import { ChannelBrowser, ChannelPage, parseVideoId, search } from './youtube';
 
-const VIEW_ID = 'playerPanel.view';
+const VIEW_ID = 'nookPanel.view';
 /** How far behind a seek target to start reading, so the covering cluster is not missed. */
 const BACKTRACK_SECONDS = 20;
 /** Longer titles are cut down for the status bar, which has the rest of the workbench to share. */
@@ -17,7 +17,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
       webviewOptions: { retainContextWhenHidden: true }
     }),
-    vscode.commands.registerCommand('player.togglePlay', () => provider.togglePlay())
+    vscode.commands.registerCommand('nook.togglePlay', () => provider.togglePlay())
   );
 }
 
@@ -47,7 +47,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly history: History
   ) {
-    this.status.command = 'player.togglePlay';
+    this.status.command = 'nook.togglePlay';
   }
 
   dispose() {
@@ -149,7 +149,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const config = vscode.workspace.getConfiguration('player');
+    const config = vscode.workspace.getConfiguration('nook');
     try {
       const results = await search(
         query,

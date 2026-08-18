@@ -4,13 +4,13 @@ import { History, Watched } from '../history';
 
 /** Stands in for the extension's globalState, which is a key-value store and nothing more. */
 function memento(initial: Watched[] = []) {
-  const store = new Map<string, unknown>([['player.history', initial]]);
+  const store = new Map<string, unknown>([['nook.history', initial]]);
   return {
     keys: () => [...store.keys()],
     get: <T>(key: string, fallback?: T) => (store.get(key) as T) ?? fallback,
     update: async (key: string, value: unknown) => void store.set(key, value),
     /** What has actually been written, for asserting that it survives a restart. */
-    stored: () => store.get('player.history') as Watched[]
+    stored: () => store.get('nook.history') as Watched[]
   };
 }
 
