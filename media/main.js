@@ -396,6 +396,9 @@
   }
 
   playButton.addEventListener('click', togglePlay);
+  // The picture itself is a play/pause target too. Nothing loaded means the placeholder covers
+  // it, so this only ever fires on a video that is actually there.
+  video.addEventListener('click', togglePlay);
 
   // The video element is the clock. Sound follows it: it goes quiet whenever the picture is not
   // advancing, and re-pins to it whenever it starts moving again — always replaying from audio
