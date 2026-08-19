@@ -36,9 +36,11 @@ Nook'u, tek ekranda kod yazarken picture-in-picture pencereleriyle uğraşmaktan
 
 Panelden **Nook** sekmesini açın.
 
-**İzlemek için** arama kutusuna aramak istediğinizi yazıp Enter tuşuna basın. Elinizde bir bağlantı varsa doğrudan yapıştırmanız yeterlidir; standart video adreslerinin yanı sıra `youtu.be`, Shorts ve `embed` biçimlerinin tamamı tanınır.
+**İzlemek için** arama kutusuna aramak istediğinizi yazıp Enter tuşuna basın. Elinizde bir bağlantı varsa doğrudan yapıştırmanız yeterlidir.
 
 **Kanal gezinmek için** sonuçlarda yer alan kanal adına tıklayın. Kanalın videoları, popüler içerikleri ve oynatma listeleri ayrı sekmeler hâlinde açılır. Geri düğmesi sizi arama sonuçlarına döndürür.
+
+**Sarmak için** görüntünün sol yarısına çift tıklayarak 10 saniye geri, sağ yarısına çift tıklayarak 10 saniye ileri gidebilirsiniz. Tek tıklama oynatmayı durdurur ve sürdürür.
 
 **Kaliteyi değiştirmek için** kontrol çubuğundaki ayar düğmesini kullanın. Seçtiğiniz kalite sonraki videolarda da korunur.
 
@@ -50,7 +52,15 @@ Oynatmayı, komut paletindeki **Nook: Play / Pause** komutuyla da duraklatabilir
 
 ## Kurulum
 
-Eklenti Marketplace'te yayımlanmadığından kendi bilgisayarınızda derlemeniz gerekir:
+Eklenti Marketplace'te yayımlanmaz; en kolay yol [Releases](https://github.com/hootbu/nook-vscode-video-player/releases/latest) sayfasından `.vsix` dosyasını indirip yüklemektir:
+
+```bash
+code --install-extension nook-0.0.3.vsix
+```
+
+Aynı işlemi VS Code içinden de yapabilirsiniz: Eklentiler görünümündeki **···** menüsünden **Install from VSIX...** seçeneğini kullanın.
+
+Kaynaktan derlemek isterseniz:
 
 ```bash
 git clone https://github.com/hootbu/nook-vscode-video-player.git
@@ -124,9 +134,11 @@ I built Nook because I grew tired of wrestling with picture-in-picture windows w
 
 Open the **Nook** tab in the panel.
 
-**To watch something,** type your search in the box and press Enter. If you already have a link, simply paste it; alongside standard video addresses, `youtu.be`, Shorts and `embed` formats are all recognised.
+**To watch something,** type your search in the box and press Enter. If you already have a link, simply paste it.
 
 **To browse a channel,** click its name in the results. The channel's videos, popular uploads and playlists open as separate tabs. The back button returns you to your search results.
+
+**To skip,** double-click the left half of the picture to go back 10 seconds, or the right half to jump forward 10 seconds. A single click pauses and resumes playback.
 
 **To change quality,** use the settings button in the control bar. Your choice carries over to the next video.
 
@@ -138,7 +150,15 @@ You can pause playback from the command palette as well, with **Nook: Play / Pau
 
 ## Install
 
-The extension isn't published on the Marketplace, so you build it on your own machine:
+The extension isn't published on the Marketplace; the easiest route is to grab the `.vsix` from the [Releases](https://github.com/hootbu/nook-vscode-video-player/releases/latest) page and install it:
+
+```bash
+code --install-extension nook-0.0.3.vsix
+```
+
+You can do the same from within VS Code: open the **···** menu in the Extensions view and choose **Install from VSIX...**.
+
+If you'd rather build from source:
 
 ```bash
 git clone https://github.com/hootbu/nook-vscode-video-player.git
