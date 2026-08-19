@@ -275,6 +275,53 @@ body {
   pointer-events: none;
 }
 
+/* The skip badge: pops up on the half of the picture that was double-clicked, then fades away. */
+#skip {
+  position: absolute;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  margin-top: -14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: skip-fade 0.7s ease-out forwards;
+}
+
+#skip svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+#skip.back {
+  left: 25%;
+  transform: translateX(-50%);
+}
+
+#skip.forward {
+  right: 25%;
+  transform: translateX(50%);
+}
+
+#skip.forward svg {
+  transform: scaleX(-1);
+}
+
+@keyframes skip-fade {
+  0%, 60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

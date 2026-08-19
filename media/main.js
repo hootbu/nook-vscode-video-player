@@ -7,6 +7,7 @@
   const resultsEl = document.getElementById('results');
   const placeholder = document.getElementById('placeholder');
   const spinner = document.getElementById('spinner');
+  const skipBadge = document.getElementById('skip');
   const video = document.getElementById('video');
   const stage = document.getElementById('stage');
   const sidebar = document.getElementById('sidebar');
@@ -126,6 +127,13 @@
       // A short lead so the first batch is scheduled in the future rather than the past.
       this.anchorContext = this.context.currentTime + 0.12;
       this.anchored = true;
+    },
+
+    /** Whether decoded audio for this media time is still in hand. */
+    covers(mediaTime) {
+      return this.chunks.some(
+        (chunk) => chunk.start <= mediaTime && mediaTime < chunk.start + chunk.duration
+      );
     },
 
     /** Where the sound believes it is, in media time. */
@@ -276,6 +284,7 @@
   let pendingResume = 0;
   /** Fresh URLs to try before a rejected source is reported as a real failure. */
   const VIDEO_RETRIES = 2;
+  const SKIP_SECONDS = 10;
   let videoRetries = 0;
   // Which feed the sound currently belongs to; packets from an older one are ignored.
   let generation = -1;
@@ -417,8 +426,57 @@
   playButton.addEventListener('click', togglePlay);
   closeButton.addEventListener('click', closeVideo);
   // The picture itself is a play/pause target too. Nothing loaded means the placeholder covers
-  // it, so this only ever fires on a video that is actually there.
-  video.addEventListener('click', togglePlay);
+  // it, so this only ever fires on a video that is actually there. A double click skips instead —
+  // left half back, right half forward — so a single click waits out the double-click window
+  // before it toggles, or two quick clicks would toggle twice and then skip.
+  let clickTimer = 0;
+  video.addEventListener('click', (event) => {
+    clearTimeout(clickTimer);
+    if (event.detail > 1) {
+      return;
+    }
+    clickTimer = setTimeout(togglePlay, 250);
+  });
+  video.addEventListener('dblclick', (event) => {
+    clearTimeout(clickTimer);
+    const left = event.offsetX < video.clientWidth / 2;
+    seekBy(left ? -SKIP_SECONDS : SKIP_SECONDS);
+  });
+
+  function seekBy(seconds) {
+    if (!duration) {
+      return;
+    }
+    seekTo(Math.min(duration, Math.max(0, video.currentTime + seconds)));
+    showSkip(seconds < 0);
+  }
+
+  /**
+   * Moves the playhead. Sound already decoded around the target is simply re-timed by 'seeked';
+   * anything further afield — beyond what is kept behind, or the lead kept ahead — has the feed
+   * restarted there, or the picture would carry on in silence.
+   */
+  function seekTo(time) {
+    video.currentTime = time;
+    if (audio.covers(time)) {
+      return;
+    }
+    audio.clear();
+    setLoading(true);
+    vscode.postMessage({ type: 'seek', time: time });
+  }
+
+  let skipTimer = 0;
+  function showSkip(back) {
+    clearTimeout(skipTimer);
+    // Restarting the animation from a stale badge needs it removed for a frame.
+    skipBadge.classList.add('hidden');
+    void skipBadge.offsetWidth;
+    skipBadge.classList.toggle('back', back);
+    skipBadge.classList.toggle('forward', !back);
+    skipBadge.classList.remove('hidden');
+    skipTimer = setTimeout(() => skipBadge.classList.add('hidden'), 700);
+  }
 
   // The video element is the clock. Sound follows it: it goes quiet whenever the picture is not
   // advancing, and re-pins to it whenever it starts moving again — always replaying from audio
@@ -526,11 +584,7 @@
     if (!duration) {
       return;
     }
-    const time = (Number(seek.value) / 1000) * duration;
-    video.currentTime = time;
-    audio.clear();
-    setLoading(true);
-    vscode.postMessage({ type: 'seek', time: time });
+    seekTo((Number(seek.value) / 1000) * duration);
   });
 
   volume.addEventListener('input', () => {

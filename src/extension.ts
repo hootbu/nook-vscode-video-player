@@ -364,6 +364,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
           <p>Search for something, or paste a link.</p>
         </div>
         <div id="spinner" class="hidden"></div>
+        <div id="skip" class="hidden">
+          <svg viewBox="0 0 16 16"><path d="M8 3a5 5 0 1 1-4.7 6.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 0.8 5.5 3 8 5.2z"/></svg>
+          <span>10</span>
+        </div>
       </div>
       <div id="controls">
         <button id="play" class="ctl" title="Play / Pause">
