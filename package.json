@@ -2,7 +2,7 @@
   "name": "nook",
   "displayName": "Nook: Video Player",
   "description": "A video player that lives in your VS Code panel, right next to the terminal.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "hootbu",
   "private": true,
   "license": "MIT",
