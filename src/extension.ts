@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { AudioFeed, packPackets } from './audio';
 import { History } from './history';
-import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver } from './stream';
+import { DEFAULT_HEIGHT, pickQuality, StreamInfo, StreamResolver, VideoOption } from './stream';
+import { VideoFeed } from './video';
 import { CuePoint } from './webm';
 import { ChannelBrowser, ChannelPage, parseVideoId, search } from './youtube';
 
@@ -37,10 +38,14 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
   // Right-hand side, and a priority high enough to sit among the editor's own items rather than
   // out at the very edge beside the notification bell.
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  /** Playback vital signs from the webview, one line every few seconds while something plays. */
+  private readonly diagnostics = vscode.window.createOutputChannel('Nook Diagnostics');
   private view?: vscode.WebviewView;
   private session?: Session;
   /** Stamps each feed so the webview can tell a superseded one's packets from the current ones. */
   private generation = 0;
+  /** The same, for the picture: a seek or a quality change supersedes the fragments in flight. */
+  private videoGeneration = 0;
   /** Counts play requests, so a resolve that finishes after a close (or a newer play) is dropped. */
   private playRequest = 0;
   /** Ceiling the viewer picked; kept across videos, since a taller one is not always offered. */
@@ -55,8 +60,14 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
 
   dispose() {
     this.session?.feed?.dispose();
+    this.session?.video?.dispose();
     this.history.dispose();
     this.status.dispose();
+    this.diagnostics.dispose();
+  }
+
+  private log(line: string) {
+    this.diagnostics.appendLine(`${new Date().toISOString()} ${line}`);
   }
 
   /** Reaches the player from the palette or the status bar, where there is nothing to click on. */
@@ -79,6 +90,8 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         this.sendHistory(view.webview);
       } else if (message.type === 'playstate') {
         this.showStatus(message.playing);
+      } else if (message.type === 'diag') {
+        this.log(JSON.stringify(message.sample));
       } else if (message.type === 'clear-history') {
         this.history.clear();
         this.sendHistory(view.webview);
@@ -92,18 +105,19 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
         await this.handlePlay(view.webview, message.id);
       } else if (message.type === 'progress') {
         this.session?.feed?.advance(message.time);
+        this.session?.video?.advance(message.time);
         if (this.session) {
+          this.session.lastTime = message.time;
           this.history.position(this.session.id, message.time);
         }
       } else if (message.type === 'seek') {
-        await this.handleSeek(view.webview, message.time);
+        this.handleSeek(view.webview, message.time, message.audio !== false, message.video !== false);
       } else if (message.type === 'close') {
         this.playRequest++;
         this.session?.feed?.dispose();
+        this.session?.video?.dispose();
         this.session = undefined;
         this.status.hide();
-      } else if (message.type === 'refresh-video') {
-        await this.handleRefresh(view.webview);
       } else if (message.type === 'quality') {
         this.handleQuality(view.webview, message.height);
       } else if (message.type === 'openExternal') {
@@ -121,6 +135,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       this.view = undefined;
       this.session?.feed?.dispose();
+      this.session?.video?.dispose();
       this.status.hide();
     });
   }
@@ -183,6 +198,7 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
 
   private async handlePlay(webview: vscode.Webview, id: string) {
     this.session?.feed?.dispose();
+    this.session?.video?.dispose();
     const request = ++this.playRequest;
     try {
       const info = await this.resolver.resolve(id);
@@ -201,17 +217,21 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       this.sendHistory(webview);
 
       const video = pickQuality(info.videos, this.maxHeight);
+      this.log(`play ${id} → ${video.label} ${video.codec} (${info.title})`);
+      session.lastTime = resumeAt;
       webview.postMessage({
         type: 'play',
         id,
         title: info.title,
         duration: info.duration,
         resumeAt,
-        video: video.url,
         quality: video.height,
         qualities: info.videos.map(({ height, label, codec }) => ({ height, label, codec }))
       });
       session.feed = this.startFeed(webview, session, {});
+      // The picture jumps straight to where watching left off; the sidx makes that exact, so
+      // unlike the sound it need not read from the top first.
+      session.video = this.startVideo(webview, session, { startTime: resumeAt, reinit: true });
       this.showStatus(true);
     } catch (error) {
       this.session = undefined;
@@ -221,28 +241,9 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Mints a fresh URL for the picture. googlevideo answers a spent or over-used URL with a 403
-   * whose body is text/plain, and the `<video>` element cannot tell that from a corrupt file — it
-   * reports a format error and stops. The audio feed already re-resolves on a 403; this is the
-   * same recovery for the other half.
-   */
-  private async handleRefresh(webview: vscode.Webview) {
-    const session = this.session;
-    if (!session) {
-      return;
-    }
-    try {
-      session.info = await this.resolver.resolve(session.id);
-      const video = pickQuality(session.info.videos, this.maxHeight);
-      webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
-    } catch (error) {
-      webview.postMessage({ type: 'error', message: (error as Error).message });
-    }
-  }
-
-  /**
    * Swaps the picture for another track of the same video. Sound is untouched: it rides a separate
-   * stream, so the webview only re-buffers the video and re-pins the audio it already holds.
+   * stream, so only the video is rebuilt — from where it is now, with the newly chosen height's
+   * init segment, since a different track needs its SourceBuffer configured afresh.
    */
   private handleQuality(webview: vscode.Webview, height: number) {
     this.maxHeight = height;
@@ -251,7 +252,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const video = pickQuality(session.info.videos, height);
-    webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
+    this.log(`quality → ${video.label} ${video.codec} at ${(session.lastTime ?? 0).toFixed(0)}s`);
+    session.video?.dispose();
+    session.video = this.startVideo(webview, session, { startTime: session.lastTime ?? 0, reinit: true });
+    webview.postMessage({ type: 'quality', height: video.height });
   }
 
   /**
@@ -260,11 +264,25 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
    * estimated from the ratio of the seek time to the duration, and the reader finds the first
    * cluster after it. Either way nothing can begin until the head has been read from the top.
    */
-  private async handleSeek(webview: vscode.Webview, time: number) {
+  /** Moves either half of the playback to `time`; the webview says which are not already buffered. */
+  private handleSeek(webview: vscode.Webview, time: number, audio: boolean, video: boolean) {
     const session = this.session;
     if (!session) {
       return;
     }
+    if (audio) {
+      this.restartAudioAt(webview, session, time);
+    }
+    if (video) {
+      session.video?.dispose();
+      // The SourceBuffer stays; its fragments carry their own timestamps, so the new ones simply
+      // land at the target and the picture is not torn down and rebuilt.
+      session.video = this.startVideo(webview, session, { startTime: time, reinit: false });
+    }
+  }
+
+  /** Restarts only the sound at `time`, from its Cues index where there is one, else by estimate. */
+  private restartAudioAt(webview: vscode.Webview, session: Session, time: number) {
     const size = session.feed?.size ?? 0;
     const head = session.head;
     session.feed?.dispose();
@@ -293,9 +311,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     const feed: AudioFeed = new AudioFeed(
       async (renew) => {
         if (renew) {
+          // A 403 spends every URL from this resolve at once, so re-resolving for the sound also
+          // refreshes what the video feed will hand out on its own next 403 — no cross-signal needed.
+          this.log('audio: 403, re-resolving stream URLs');
           session.info = await this.resolver.resolve(session.id);
-          const video = pickQuality(session.info.videos, this.maxHeight);
-          webview.postMessage({ type: 'video-url', video: video.url, quality: video.height });
         }
         return session.info.audioUrl;
       },
@@ -311,7 +330,9 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
           if (session.resumeAt !== undefined) {
             const target = session.resumeAt;
             session.resumeAt = undefined;
-            void this.handleSeek(webview, target);
+            // Only the sound waits on the head to reach its resume point; the picture jumped there
+            // when it started, so it is not disturbed.
+            this.restartAudioAt(webview, session, target);
             return;
           }
           webview.postMessage({ type: 'audio-head', generation, head: head.toString('base64') });
@@ -320,7 +341,10 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
           webview.postMessage({ type: 'audio', generation, batch: packPackets(packets) });
         },
         ended: () => webview.postMessage({ type: 'audio-end', generation }),
-        failed: (message) => webview.postMessage({ type: 'error', message })
+        failed: (message) => {
+          this.log(`audio feed failed: ${message}`);
+          webview.postMessage({ type: 'error', message });
+        }
       },
       options
     );
@@ -331,6 +355,57 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     return feed;
   }
 
+  /**
+   * Feeds the picture as fragmented MP4 over the same channel as the sound. `reinit` sends the
+   * init segment so the webview builds a fresh SourceBuffer — a first load or a quality change;
+   * without it the existing buffer is kept and the new fragments simply land at their own
+   * timestamps, which is what a seek wants.
+   */
+  private startVideo(
+    webview: vscode.Webview,
+    session: Session,
+    options: { startTime?: number; reinit: boolean }
+  ): VideoFeed {
+    const generation = ++this.videoGeneration;
+    return new VideoFeed(
+      async (renew): Promise<VideoOption> => {
+        if (renew) {
+          this.log('video: 403, re-resolving stream URLs');
+          session.info = await this.resolver.resolve(session.id);
+        }
+        return pickQuality(session.info.videos, this.maxHeight);
+      },
+      {
+        init: (head, mime, duration) => {
+          if (options.reinit) {
+            webview.postMessage({
+              type: 'video-init',
+              generation,
+              head: head.toString('base64'),
+              mime,
+              duration,
+              // Building a fresh MediaSource resets the element to zero, so the webview must be
+              // told where the fragments will land — a quality change resumes there, not at the top.
+              time: options.startTime ?? 0
+            });
+          } else {
+            // Seek: keep the buffer, just take over the generation so older fragments are dropped.
+            webview.postMessage({ type: 'video-resume', generation });
+          }
+        },
+        fragment: (data, time) =>
+          webview.postMessage({ type: 'video-frag', generation, data: data.toString('base64'), time }),
+        ended: () => webview.postMessage({ type: 'video-end', generation }),
+        failed: (message) => {
+          this.log(`video feed failed: ${message}`);
+          webview.postMessage({ type: 'error', message });
+        }
+      },
+      session.info.duration,
+      { startTime: options.startTime }
+    );
+  }
+
   private render(webview: vscode.Webview): string {
     const asset = (name: string) =>
       webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', name));
@@ -339,9 +414,9 @@ class PlayerViewProvider implements vscode.WebviewViewProvider {
     const csp = [
       `default-src 'none'`,
       `img-src https://i.ytimg.com https://yt3.ggpht.com data:`,
-      // googlevideo answers with a redirect to another edge node often enough that the CSP has to
-      // cover where those land too, not just the host the URL was minted with.
-      `media-src https://*.googlevideo.com https://*.youtube.com https://*.googleusercontent.com`,
+      // Both tracks arrive over postMessage now — the video as fragmented MP4 fed to a MediaSource,
+      // the audio decoded from Opus — so the only media the element loads is the blob: object URL.
+      `media-src blob:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       // 'wasm-unsafe-eval' is what lets the bundled Opus decoder instantiate.
       `script-src 'nonce-${nonce}' 'wasm-unsafe-eval'`
@@ -438,11 +513,14 @@ interface Session {
   id: string;
   info: StreamInfo;
   feed?: AudioFeed;
+  video?: VideoFeed;
   head?: Buffer;
   /** The audio track's index, once the feed has read past it. */
   cues?: CuePoint[];
   /** Set only until the head arrives and the feed can be moved to where watching left off. */
   resumeAt?: number;
+  /** Last reported playback position, so a quality change resumes the picture where it is. */
+  lastTime?: number;
 }
 
 /** The cue whose cluster covers `time`: the last one starting at or before it. */

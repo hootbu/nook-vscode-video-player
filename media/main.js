@@ -40,6 +40,22 @@
   }
 
   /**
+   * Running tallies for the diagnostics feed: what has happened since the video started, sampled
+   * every few seconds into the extension's output channel. Costs nothing while nothing is playing.
+   */
+  const diag = {
+    waits: 0,
+    plays: 0,
+    seeks: 0,
+    restarts: 0,
+    frags: 0,
+    batches: 0,
+    quota: 0,
+    appendErrors: 0,
+    videoError: 0
+  };
+
+  /**
    * Sound for the video, decoded here rather than by the platform.
    *
    * VS Code's ffmpeg has no Opus decoder, so the packets arrive raw from the extension host and a
@@ -248,6 +264,7 @@
       if (!this.context) {
         return;
       }
+      diag.restarts++;
       this.silence();
       this.anchor(mediaTime);
       this.schedule();
@@ -282,10 +299,9 @@
   // Where a half-watched video should pick up. The <video> element cannot be seeked before it
   // knows its own duration, so the position waits here for its metadata.
   let pendingResume = 0;
-  /** Fresh URLs to try before a rejected source is reported as a real failure. */
-  const VIDEO_RETRIES = 2;
+  // Set when a video is asked for, so playback starts the moment its MediaSource is built.
+  let pendingAutoplay = false;
   const SKIP_SECONDS = 10;
-  let videoRetries = 0;
   // Which feed the sound currently belongs to; packets from an older one are ignored.
   let generation = -1;
 
@@ -293,8 +309,9 @@
   function unload() {
     currentId = '';
     pendingResume = 0;
-    videoRetries = 0;
+    pendingAutoplay = false;
     video.pause();
+    mse.teardown();
     video.removeAttribute('src');
     video.load();
     audio.clear();
@@ -335,8 +352,10 @@
     qualities = message.qualities || [];
     renderQuality(message.quality);
     pendingResume = message.resumeAt || 0;
-    video.src = message.video;
-    video.play().catch(() => {});
+    // The picture is not a URL any more: it arrives as MP4 fragments the extension host feeds in,
+    // which mse pipes into a MediaSource. Playback cannot begin until that source is built by the
+    // 'video-init' message that follows, so the intent to play is remembered until then.
+    pendingAutoplay = true;
     seek.value = '0';
     renderTime();
     setStatus(pendingResume ? `Resuming at ${formatTime(pendingResume)}.` : '');
@@ -368,7 +387,7 @@
     let dataAt = 4 + count * 6;
     for (let i = 0; i < count; i++) {
       const length = view.getUint16(lengthAt, true);
-      const time = view.getFloat32(timeAt, true);
+      const time = view.getUint32(timeAt, true) / 1000;
       packets.push({ time: time, data: bytes.subarray(dataAt, dataAt + length) });
       lengthAt += 2;
       timeAt += 4;
@@ -376,6 +395,163 @@
     }
     return packets;
   }
+
+  /**
+   * The picture, fed to the <video> element through Media Source Extensions.
+   *
+   * The extension host streams the video track as fragmented MP4 — an init segment, then one
+   * fragment at a time, each fetched as a bounded byte range that googlevideo serves at full speed.
+   * Those land here and are appended to a SourceBuffer in order. Every append and every eviction
+   * needs the buffer idle, so work is queued and drained on 'updateend'. What is well behind the
+   * playhead is trimmed, so a long watch does not pile the whole video up in memory.
+   */
+  const mse = {
+    source: null,
+    buffer: null,
+    url: '',
+    queue: [],
+    generation: -1,
+    duration: 0,
+    ended: false,
+
+    /** A fresh MediaSource for a new video or a quality change; the init segment leads the queue. */
+    start(generation, head, mime, duration) {
+      this.teardown();
+      this.generation = generation;
+      this.duration = duration || 0;
+      this.ended = false;
+      this.queue = [head];
+      const source = new MediaSource();
+      this.source = source;
+      source.addEventListener(
+        'sourceopen',
+        () => {
+          if (this.source !== source) {
+            return; // superseded before it opened
+          }
+          if (this.duration > 0 && isFinite(this.duration)) {
+            try {
+              source.duration = this.duration;
+            } catch (error) {
+              /* set again once the first fragment fixes the timeline */
+            }
+          }
+          if (!MediaSource.isTypeSupported(mime)) {
+            setStatus(`This video's codec is not supported here (${mime}).`);
+            return;
+          }
+          this.buffer = source.addSourceBuffer(mime);
+          this.buffer.addEventListener('updateend', () => this.drain());
+          this.drain();
+        },
+        { once: true }
+      );
+      this.url = URL.createObjectURL(source);
+      video.src = this.url;
+    },
+
+    /** A seek keeps the buffer and only takes over the generation, dropping any older fragments. */
+    resume(generation) {
+      this.generation = generation;
+      this.queue = [];
+      this.ended = false;
+      this.drain();
+    },
+
+    push(data) {
+      this.queue.push(data);
+      this.drain();
+    },
+
+    end() {
+      this.ended = true;
+      this.drain();
+    },
+
+    /** Whether the target time is already buffered, so a seek there needs no refetch. */
+    covers(time) {
+      const ranges = this.buffer && this.buffer.buffered;
+      if (!ranges) {
+        return false;
+      }
+      for (let i = 0; i < ranges.length; i++) {
+        if (ranges.start(i) - 0.15 <= time && time < ranges.end(i)) {
+          return true;
+        }
+      }
+      return false;
+    },
+
+    drain() {
+      const buffer = this.buffer;
+      if (!buffer || buffer.updating) {
+        return;
+      }
+      if (this.queue.length) {
+        const chunk = this.queue.shift();
+        try {
+          buffer.appendBuffer(chunk);
+        } catch (error) {
+          if (error.name === 'QuotaExceededError') {
+            diag.quota++;
+            // Buffer full: drop what is behind us and try the same chunk again next round.
+            this.queue.unshift(chunk);
+            this.trim(true);
+          } else {
+            diag.appendErrors++;
+            setStatus(`Video buffer error: ${error.message}`);
+          }
+        }
+        return;
+      }
+      // Caught up: reclaim memory behind the playhead, then close the stream if it has ended.
+      if (this.trim(false)) {
+        return;
+      }
+      if (this.ended && this.source && this.source.readyState === 'open') {
+        try {
+          this.source.endOfStream();
+        } catch (error) {
+          /* already closing */
+        }
+      }
+    },
+
+    /** Removes buffered picture well behind the playhead. Returns whether a removal was started. */
+    trim(aggressive) {
+      const buffer = this.buffer;
+      if (!buffer || buffer.updating || !buffer.buffered.length) {
+        return false;
+      }
+      const behind = video.currentTime - (aggressive ? 4 : 30);
+      if (behind > buffer.buffered.start(0) + 1) {
+        try {
+          buffer.remove(buffer.buffered.start(0), behind);
+          return true;
+        } catch (error) {
+          /* nothing removable */
+        }
+      }
+      return false;
+    },
+
+    teardown() {
+      if (this.source && this.source.readyState === 'open') {
+        try {
+          this.source.endOfStream();
+        } catch (error) {
+          /* already closed */
+        }
+      }
+      if (this.url) {
+        URL.revokeObjectURL(this.url);
+        this.url = '';
+      }
+      this.buffer = null;
+      this.source = null;
+      this.queue = [];
+    }
+  };
 
   // --- controls ---
 
@@ -457,13 +633,19 @@
    * restarted there, or the picture would carry on in silence.
    */
   function seekTo(time) {
+    diag.seeks++;
+    const audioCovered = audio.covers(time);
+    const videoCovered = mse.covers(time);
     video.currentTime = time;
-    if (audio.covers(time)) {
-      return;
+    if (audioCovered && videoCovered) {
+      return; // both halves already in hand: the picture seeks natively, the sound is re-timed
     }
-    audio.clear();
+    if (!audioCovered) {
+      audio.clear();
+    }
     setLoading(true);
-    vscode.postMessage({ type: 'seek', time: time });
+    // Ask only for the half that is missing; the other keeps what it has.
+    vscode.postMessage({ type: 'seek', time: time, audio: !audioCovered, video: !videoCovered });
   }
 
   let skipTimer = 0;
@@ -491,20 +673,25 @@
     renderPlayState();
   });
   video.addEventListener('waiting', () => {
+    diag.waits++;
     audio.silence();
     setLoading(true);
+    // Eviction rounds up to the next keyframe, so a trim can carve out the very neighbourhood the
+    // playhead sits in. A hole with picture just ahead never fills - jump it instead of waiting.
+    for (let i = 0; i < video.buffered.length; i++) {
+      const gap = video.buffered.start(i) - video.currentTime;
+      if (gap > 0 && gap < 2) {
+        video.currentTime = video.buffered.start(i) + 0.05;
+        break;
+      }
+    }
   });
   video.addEventListener('seeking', () => setLoading(true));
   video.addEventListener('canplay', () => setLoading(false));
   video.addEventListener('playing', () => {
+    diag.plays++;
     setLoading(false);
     audio.restart(video.currentTime);
-    // Picture is moving, so whatever was refused is behind us: a failure hours from now, when the
-    // URL expires on its own, gets its own goes at a fresh one.
-    videoRetries = 0;
-    if (status.textContent.startsWith('Stream refused')) {
-      setStatus('');
-    }
   });
   video.addEventListener('loadedmetadata', () => {
     if (pendingResume) {
@@ -531,18 +718,9 @@
   });
   video.addEventListener('error', () => {
     const failure = video.error;
-
-    // A spent googlevideo URL answers 403 with a text/plain body, which the element cannot tell
-    // from a corrupt file: it reports a format error. So a rejected source is worth one or two
-    // goes at a fresh URL before it is believed. The src attribute is the discriminator —
-    // requestPlay strips it before calling load(), and that rejection is not worth retrying.
-    if (failure && failure.code === 4 && video.getAttribute('src') && videoRetries < VIDEO_RETRIES) {
-      videoRetries++;
-      setStatus('Stream refused — asking for a fresh URL…');
-      vscode.postMessage({ type: 'refresh-video' });
-      return;
-    }
-
+    diag.videoError = failure ? failure.code : -1;
+    // The picture is fed through a MediaSource now, so a spent URL is caught and re-resolved by the
+    // feed on the extension side; what reaches the element here is a genuine playback failure.
     setLoading(false);
     const kind =
       { 1: 'aborted', 2: 'network', 3: 'decode', 4: 'source rejected' }[failure && failure.code] ||
@@ -563,12 +741,47 @@
     return !video.paused && video.readyState >= 3;
   }
 
-  // Tell the feed where playback is so it keeps just enough audio ahead of us.
+  // Tell the feed where playback is so it keeps just enough audio ahead of us. Not before the
+  // element knows its metadata: while a fresh source is being built its position reads zero, and
+  // reporting that would overwrite the real one in the history and drag the feeds back to the top.
   setInterval(() => {
-    if (currentId && !video.paused) {
+    if (currentId && !video.paused && video.readyState >= 1) {
       vscode.postMessage({ type: 'progress', time: video.currentTime });
     }
   }, 1000);
+
+  // Vital signs, sampled into the extension's output channel. When playback misbehaves after a
+  // long watch, this trail says which part gave out: a swelling heap points at a leak here, dropped
+  // frames at the decoder, a starved buffer at the feed, and the counters at event storms.
+  setInterval(() => {
+    if (!currentId) {
+      return;
+    }
+    const quality = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    const ranges = [];
+    for (let i = 0; i < video.buffered.length; i++) {
+      ranges.push(`${video.buffered.start(i).toFixed(1)}-${video.buffered.end(i).toFixed(1)}`);
+    }
+    vscode.postMessage({
+      type: 'diag',
+      sample: Object.assign(
+        {
+          time: Number(video.currentTime.toFixed(1)),
+          ready: video.readyState,
+          paused: video.paused,
+          buffered: ranges.join(','),
+          heapMB: window.performance.memory
+            ? Math.round(window.performance.memory.usedJSHeapSize / 1048576)
+            : -1,
+          chunks: audio.chunks.length,
+          queue: mse.queue.length,
+          dropped: quality ? quality.droppedVideoFrames : -1,
+          frames: quality ? quality.totalVideoFrames : -1
+        },
+        diag
+      )
+    });
+  }, 5000);
 
   seek.addEventListener('pointerdown', () => {
     scrubbing = true;
@@ -942,23 +1155,40 @@
       }
     } else if (message.type === 'audio') {
       if (message.generation === generation) {
+        diag.batches++;
         audio.push(unpack(message.batch));
       }
     } else if (message.type === 'audio-end') {
       if (message.generation === generation) {
         audio.flush();
       }
-    } else if (message.type === 'video-url') {
-      // Reloading the picture always restarts its buffer; the sound is a separate stream and keeps
-      // going, so a paused player must stay paused rather than being nudged back into playing.
-      const at = video.currentTime;
-      const wasPlaying = !video.paused;
-      video.src = message.video;
-      video.currentTime = at;
-      if (wasPlaying) {
+    } else if (message.type === 'video-init') {
+      // Capture the intent before the element is reset: autoplay for a new video, otherwise keep
+      // playing only if it already was (a quality change must not wake a paused player).
+      const resume = pendingAutoplay || !video.paused;
+      pendingAutoplay = false;
+      mse.start(message.generation, unpackBytes(message.head), message.mime, message.duration);
+      if (message.time) {
+        // The new source starts the element from zero, but the fragments land where playback was.
+        // Before metadata this sets the default start position, applied the moment it loads.
+        video.currentTime = message.time;
+      }
+      if (resume) {
         video.play().catch(() => {});
       }
-      renderQuality(message.quality);
+    } else if (message.type === 'video-resume') {
+      mse.resume(message.generation);
+    } else if (message.type === 'video-frag') {
+      if (message.generation === mse.generation) {
+        diag.frags++;
+        mse.push(unpackBytes(message.data));
+      }
+    } else if (message.type === 'video-end') {
+      if (message.generation === mse.generation) {
+        mse.end();
+      }
+    } else if (message.type === 'quality') {
+      renderQuality(message.height);
     } else if (message.type === 'error') {
       moreButton.disabled = false;
       setLoading(false);

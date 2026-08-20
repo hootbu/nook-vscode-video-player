@@ -16,6 +16,11 @@ export interface VideoOption {
   url: string;
   /** Bytes, when YouTube says. */
   length?: number;
+  /** Last byte of the ftyp+moov init segment. */
+  initEnd?: number;
+  /** First and last byte of the sidx box, which indexes every fragment. */
+  indexStart?: number;
+  indexEnd?: number;
 }
 
 export interface StreamInfo {
@@ -160,7 +165,10 @@ async function collectVideos(formats: Format[], player?: Player): Promise<VideoO
       mime: format.mime_type,
       // Plain for the primary client; the fallback's are signed and come out of the player script.
       url: await format.decipher(player),
-      length: format.content_length
+      length: format.content_length,
+      initEnd: format.init_range?.end,
+      indexStart: format.index_range?.start,
+      indexEnd: format.index_range?.end
     }))
   );
 }
