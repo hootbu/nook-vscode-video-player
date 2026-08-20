@@ -18,7 +18,7 @@ function unpack(base64: string): { time: number; data: number[] }[] {
   for (let i = 0; i < count; i++) {
     const length = view.getUint16(lengthAt, true);
     packets.push({
-      time: view.getFloat32(timeAt, true),
+      time: view.getUint32(timeAt, true) / 1000,
       data: [...bytes.subarray(dataAt, dataAt + length)]
     });
     lengthAt += 2;

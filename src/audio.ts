@@ -128,16 +128,16 @@ export class AudioFeed {
     }
   }
 
-  private waitUntilHungry(): Promise<void> {
-    if (this.ahead <= this.target + LEAD_SECONDS || this.abort.signal.aborted) {
-      return Promise.resolve();
+  /** A wake-up is only a prompt to re-check: one wake must not buy one fetch on its own. */
+  private async waitUntilHungry(): Promise<void> {
+    while (this.ahead > this.target + LEAD_SECONDS && !this.abort.signal.aborted) {
+      await new Promise<void>((resolve) => {
+        this.wake = () => {
+          this.wake = undefined;
+          resolve();
+        };
+      });
     }
-    return new Promise((resolve) => {
-      this.wake = () => {
-        this.wake = undefined;
-        resolve();
-      };
-    });
   }
 
   /** 403 means the URL is spent rather than retryable, so the streams get re-resolved. */
@@ -185,7 +185,7 @@ export function packPackets(packets: OpusPacket[]): string {
   let dataAt = 4 + packets.length * 6;
   for (const packet of packets) {
     buffer.writeUInt16LE(packet.data.length, lengthAt);
-    buffer.writeFloatLE(packet.time, timeAt);
+    buffer.writeUInt32LE(Math.round(packet.time * 1000), timeAt);
     packet.data.copy(buffer, dataAt);
     lengthAt += 2;
     timeAt += 4;
